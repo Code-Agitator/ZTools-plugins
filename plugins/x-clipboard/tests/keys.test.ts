@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { resolveKey } from '../src/lib/keys.ts'
+import { pasteSlot, resolveKey } from '../src/lib/keys.ts'
 
 /** 造一个够用的键盘事件 —— resolveKey 只读这四个字段 */
 function ev(init: Partial<KeyboardEvent>): KeyboardEvent {
@@ -43,9 +43,38 @@ test('Tab / ⇧Tab 切分类', () => {
   assert.equal(resolveKey(ev({ key: 'Tab', shiftKey: true })), 'cycleTypeBack')
 })
 
-test('Delete 与 Backspace 都算删除', () => {
+/*
+ * ★ Backspace 不再等于删除（09-17 改）。
+ *
+ * 锁的是一次真实的数据丢失：删除能在设置里关掉确认框之后，按下去就是真删
+ * （宿主硬删、图像连磁盘文件一起 unlink、没有撤销），
+ * 而「想删搜索词里的一个字」是高频动作 —— 两者共用一个键迟早出事。
+ * 现在：裸 Backspace = 退搜索框；删数据只剩 `Delete` 和 `⌘⌫`。
+ */
+test('★ 裸 Backspace 是退格，不是删除', () => {
+  assert.equal(resolveKey(ev({ key: 'Backspace' })), 'backspaceSearch')
+  assert.notEqual(resolveKey(ev({ key: 'Backspace' })), 'remove', 'Backspace 绝不能回到删除')
+})
+
+test('删除只剩 Delete 和 ⌘⌫ / Ctrl+⌫（macOS 惯例）', () => {
   assert.equal(resolveKey(ev({ key: 'Delete' })), 'remove')
-  assert.equal(resolveKey(ev({ key: 'Backspace' })), 'remove')
+  assert.equal(resolveKey(ev({ metaKey: true, key: 'Backspace' })), 'remove')
+  assert.equal(resolveKey(ev({ ctrlKey: true, key: 'Backspace' })), 'remove')
+})
+
+/*
+ * 光有映射还不够：onKeydown 里没接上，这个键就是**静默无反应**（连退格都不退了）。
+ * `resolveKey` 是纯函数能单测，接线长在 App.vue 里，只能做源码断言 ——
+ * 跟下面确认框那条一个路子。
+ */
+test('onKeydown 真的把 backspaceSearch 接到了处理函数上', () => {
+  const sfc = readFileSync(fileURLToPath(new URL('../src/App.vue', import.meta.url)), 'utf8')
+  const kd = sfc.slice(sfc.indexOf('function onKeydown('))
+  assert.match(
+    kd,
+    /case 'backspaceSearch':[\s\S]{0,120}?backspaceSearch\(\)/,
+    "onKeydown 里没有接 backspaceSearch —— 那样退格键会变成哑键"
+  )
 })
 
 /*
@@ -81,6 +110,27 @@ test('底栏键位提示里有 ⌘/ 设置这一项', () => {
 })
 
 /*
+ * 底栏提示条里必须真的写着「⌘1–⌘9 秒贴」。
+ *
+ * 跟上面那条同一个理由（可发现性），但这一族键更隐蔽 —— **界面上连线索都没有**：
+ * 行尾那列「序号」默认是关的，所以连"行尾会显示号码"这件事默认也看不见。
+ * 09-17 老大第三次因为「实现了却没提示」提出来，原话「怎么老是忘记这个」。
+ * 这条锁住它别哪天被当成"提示太挤"删掉。
+ *
+ * 演示写法：`<kbd>{{ modKey('1') }}–{{ modKey('9') }}</kbd>秒贴`（修饰键按平台渲染成 ⌘ / Ctrl）。
+ */
+test('底栏键位提示里有 ⌘1–⌘9 秒贴这一项', () => {
+  const sfc = readFileSync(fileURLToPath(new URL('../src/App.vue', import.meta.url)), 'utf8')
+  const hints = sfc.match(/<div class="hints">[\s\S]*?<\/div>/)
+  assert.ok(hints, 'App.vue 里找不到底栏的 .hints 块')
+  assert.match(
+    hints[0],
+    /\{\{\s*modKey\('1'\)\s*\}\}–\{\{\s*modKey\('9'\)\s*\}\}<\/kbd>秒贴/,
+    '提示条里没写 ⌘1–⌘9 秒贴'
+  )
+})
+
+/*
  * ★ 确认框开着时，Enter 必须是「确定」，**不能穿透成「复制当前项」**。
  *
  * 老大 09-17 真机报的：弹框问「删除这条记录？」时按 Enter ——
@@ -108,4 +158,43 @@ test('★ 确认框开着时 Enter = 确定（别让它穿透去 pasteActive）'
   const body = kd.slice(guard, kd.indexOf('if (!action)'))
   assert.match(body, /action === 'enter'/, '守卫里没把 Enter 接给「确定」')
   assert.match(body, /runConfirm\(\)/, '守卫里没调 runConfirm')
+})
+
+/*
+ * ⌘1–⌘9 秒贴。
+ *
+ * 这条键位有个必须记住的前提：**数字键不在宿主那六个键的白名单里**，
+ * 所以它跟 ⌘K 一样，得先按一次 ↑↓ 把焦点搬进插件才收得到。
+ * 这里锁的是「映射本身对不对」，收不收得到是宿主的事（见 REFERENCE §26.1-D）。
+ */
+test('⌘1–⌘9 / Ctrl+1–Ctrl+9 映射到 paste1–paste9（两个修饰键都收）', () => {
+  assert.equal(resolveKey(ev({ metaKey: true, key: '1' })), 'paste1')
+  assert.equal(resolveKey(ev({ ctrlKey: true, key: '5' })), 'paste5')
+  assert.equal(resolveKey(ev({ metaKey: true, key: '9' })), 'paste9')
+})
+
+/*
+ * ⚠️ ⌘0 不做第 10 条。
+ * 行尾只给前 9 行显示序号；如果这里认了 0，界面上就会出现一个
+ * 「没有标注、但按下去有反应」的键 —— 而且 0 放在 1 前面的直觉也不成立。
+ */
+test('⌘0 不映射（只做 1–9）', () => {
+  assert.equal(resolveKey(ev({ metaKey: true, key: '0' })), null)
+})
+
+/*
+ * 不带修饰键的数字必须是 null。
+ * 搜索框里搜「123」是常事，要是这里认了，打一个字就粘走一条。
+ */
+test('裸数字键 → null，不然在搜索框里打字就会粘贴', () => {
+  assert.equal(resolveKey(ev({ key: '1' })), null)
+  assert.equal(resolveKey(ev({ key: '9' })), null)
+})
+
+test('pasteSlot 把 pasteN 换成 0 基下标，别的动作一律 null', () => {
+  assert.equal(pasteSlot('paste1'), 0)
+  assert.equal(pasteSlot('paste9'), 8)
+  assert.equal(pasteSlot('favorite'), null)
+  assert.equal(pasteSlot(null), null)
+  assert.equal(pasteSlot(undefined), null)
 })

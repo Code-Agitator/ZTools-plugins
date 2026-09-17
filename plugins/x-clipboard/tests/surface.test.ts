@@ -80,3 +80,32 @@ test('★ 「默认」档不覆盖（返回 null），绝不能返回 transparen
 test('认不出的模式：浮层也不覆盖（跟 resolveBg 一样当 auto 处理）', () => {
   assert.equal(resolveFloatBg('never' as never, false), null)
 })
+
+/*
+ * ★ 底色 = **一条明度阶梯 + 两个色温**（09-17 从 4 个加到 6 个，老大挑的方案 A）。
+ *
+ * 起因是他问"底色是不是该提供全一点"。核实下来**问题不在数量，在名不副实**：
+ * 原来那四个预设里，深色主题下的 RGB 只差 5~8 个点（根本分不出是四档），
+ * 浅色主题下也只有「白 / 灰」能分辨，暖·冷只是色温微调 ⇒ **名义 4 档、实际 2 档**。
+ *
+ * 所以加的是**明度**，不是色相 —— 色相这条路走不通：文字色 `--tx-*` 是写死的两套，
+ * 不跟着底色走；浮层还会跟着底色铺到详情 / 确认框那些密集文字区（见 REFERENCE §34.3）。
+ *
+ * 锁三件事：
+ *   1. **实底预设正好 5 个**（面板里连「默认」那颗一共 **6 颗**），顺序 = 白 → 灰 → 实 → 暖 → 冷。
+ *      6 颗仍在一行内：面板内容宽 268px，色点 14 + 间距 12 ⇒ 一行最多 10 个（见 REFERENCE §34.2）；
+ *   2. 前三个是**明度阶梯**：浅色端越排越深、深色端越排越亮（两端是同一条阶梯）；
+ *   3. `strong` 在 `BG_KEYS` 里（面板是遍历 `BG_PRESETS` 渲染的，但**校验**认的是 `BG_KEYS`）。
+ */
+test('★ 底色：白 / 灰 / 实 是明度阶梯，暖冷压尾（实底 5 个 + 默认 = 面板 6 颗）', () => {
+  assert.deepEqual(
+    BG_PRESETS.map((p) => p.key),
+    ['white', 'gray', 'strong', 'warm', 'cool']
+  )
+  const ladder = BG_PRESETS.slice(0, 3)
+  for (let i = 1; i < ladder.length; i++) {
+    assert.ok(lum(ladder[i].light) < lum(ladder[i - 1].light), '浅色端不是越排越深')
+    assert.ok(lum(ladder[i].dark) > lum(ladder[i - 1].dark), '深色端不是越排越亮')
+  }
+  assert.ok(BG_KEYS.includes('strong'), 'strong 没进 BG_KEYS —— 会被 normalizeSettings 丢掉')
+})

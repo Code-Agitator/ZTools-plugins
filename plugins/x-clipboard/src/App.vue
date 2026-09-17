@@ -37,10 +37,18 @@ import {
 } from './lib/favorites'
 import { ACCENT_KEYS, accentSwatch } from './lib/accent'
 import { BG_PRESETS, resolveBg } from './lib/surface'
-import { resolveKey } from './lib/keys'
+import { pasteSlot, resolveKey } from './lib/keys'
 import { modKey } from './lib/platform'
 import { peekGeom, peekKindOf, type PeekGeom, type PeekKind } from './lib/peek'
-import { catOf, cycleCat, TYPE_LABEL, labelOf, parseQuery, prefixOf } from './lib/query'
+import {
+  backspaceQuery,
+  catOf,
+  cycleCat,
+  TYPE_LABEL,
+  labelOf,
+  parseQuery,
+  prefixOf,
+} from './lib/query'
 import { resolveSelection } from './lib/selection'
 import {
   DEFAULT_SETTINGS,
@@ -397,17 +405,19 @@ async function attachSubInput(): Promise<void> {
   try {
     await zt().setSubInput(
       (details) => {
-        keyword.value =
+        const next =
           typeof details === 'string' ? details : details?.text ?? details?.value ?? ''
         /*
-         * ★ 用户**直接在宿主搜索框里打字**走的是这条路（`writeQuery` 那条是我们程序化写框时才走）。
+         * ★ 用户**直接在宿主搜索框里打字 / 退格**走的是这条路（`writeQuery` 那条是我们程序化写框时才走）。
          *   两条路都**只改本地状态、不取数** —— 关键词只影响 `rows` 的前端过滤。
          *   要重新取数的只有四类时机，全都在别处（打开插件 / 剪贴板变化 / 删除 / 清空）。
          *
-         * `syncSelection()` 还是要调：过滤掉一批行之后，原来选中的那条可能已经不在列表里了。
-         * 这里**不置 `pinToTop`** —— 跟改造前一致（打字是"缩小范围"，选中项还在就原地不动）。
+         * ★ 落选中项的规矩**只有 `commitTypedQuery` 那一处**（见它的注释）：
+         *   **搜索框内容一变 ⇒ 列表整张重筛 ⇒ 落回第一条 + 滚回顶上**（不分变多变少）。
+         *   ⚠️ 这里**别再直接写 `syncSelection()`** —— 那正是老大两轮报的 bug（搜 `abc` 退光后
+         *   ↑↓ 不从第一条；退到一半时也一样）。原生编辑和插件代按退格必须走同一条规矩。
          */
-        syncSelection()
+        commitTypedQuery(next)
       },
       SUB_INPUT_PLACEHOLDER,
       true
@@ -467,6 +477,75 @@ function takeKeyboard(): void {
  */
 function typeIntoSearch(ch: string): void {
   writeQuery(keyword.value + ch)
+}
+
+/**
+ * 搜索框被人改了之后，把新值落到状态上 —— **落选中项的规矩只有这一处**。
+ *
+ * 两个来源都走它：
+ *   1. 用户在宿主搜索框里**原生编辑**（打字 / 退格 / 选中一段删掉）→ `setSubInput` 回调；
+ *   2. 插件**代他按退格** → `backspaceSearch`。
+ *
+ * ★ 规矩（09-17 老大**两轮**要求后定稿）：
+ *   **搜索框内容一变 = 列表整张重筛 = 一张新列表 ⇒ 落回第一条、列表滚回顶上。**
+ *   不区分"变多还是变少"：打字、退一格、退到一半、退光、清空，全都算。
+ *
+ *   ⚠️ 第一轮我只做了"**退成空**才回顶"（理由写着"还有词只是缩小范围、选中项还在就原地不动"）——
+ *   老大当场又报了一条：**"删到一半时，列表根据搜索框剩下的内容重新渲染了，为什么这时候 ↑↓
+ *   没有重新从第一行开始"**。他说得对：剩下的关键词一换，旧选中那条在新列表里可能跑到第 12 位
+ *   （甚至已经不在列表里），而用户看到的是一张从头铺开的新列表 —— 光标停在中间就成了"莫名其妙
+ *   从那儿开始"。所以那条"半条规则"作废，判据不再需要（`isScopeReset` 已删）。
+ *
+ *   ★ 唯一**不**回顶的是"列表自己变了"（别人复制了新东西 → `reload` / `refreshFavorites`）：
+ *     那不是"用户在看的东西"变了，只是他看的那一行被刷新了 ⇒ 选中项还活着就原地不动
+ *     —— 那是 `resolveSelection` 的默认规矩（`pinToTop = false`），别跟这条混。
+ *
+ * ⚠️ 为什么还要显式滚一下：不能只靠 `watch(activeKey)` ——
+ * 如果选中项本来就正好是第一条，`activeKey` **没变**，那个 watch 不触发，
+ * 列表会停在用户之前滚到的位置，高亮却在屏幕外。老大那句"列表展示也要回到第一条"指的就是这个。
+ *
+ * ⚠️ 值没变就直接返回：宿主 `setSubInputValue` 的实现里**末尾会 `notifySubInputChange(text)`**
+ * （= 把我们自己写进去的值再回声一次给这个回调）。我们这边 `writeQuery` / `backspaceSearch`
+ * 写完框**自己也会调一次**，不加这道闸就会跑两遍。多跑一遍本身无害（幂等），
+ * 但回声是**异步**到的 —— 万一它落地前用户已经按了 ↑↓ 挪去别的行，
+ * 那次迟到的"落回第一条"就把人拽回去了。值没变就说明列表没重筛，什么都不用做。
+ */
+function commitTypedQuery(next: string): void {
+  if (keyword.value === next) return
+  keyword.value = next
+  pinToTop = true
+  void nextTick(scrollActiveIntoView)
+  syncSelection()
+}
+
+/**
+ * Backspace：**只退搜索框，永不删数据**（09-17 改语义）。
+ *
+ * 以前它跟 Delete 一样删当前项。而删除现在可以在设置里关掉确认框 ——
+ * 「想删搜索词里的一个字」这个高频动作，一下就变成"整条记录没了"
+ * （宿主是硬删、图像连磁盘文件一起 unlink，**没有撤销**）。退格键不该有这种权力。
+ * 现在它只做退格：有词退一个字符 / 只剩分类前缀就把前缀也退掉 / 空框不动。
+ * 删数据只剩 `Delete` 和 `⌘⌫`（见 lib/keys.ts）。
+ *
+ * ⚠️ **不走 `writeQuery`**，走 `commitTypedQuery` —— 两条路的落位规矩现在**一样**（都是无条件回顶，
+ * 见 `commitTypedQuery`），区别只有一个：`writeQuery` 会替我们把值写进框（这里已经写了）、
+ * 而框里刚写进去的值会被宿主回声回来，多写一次就是多余的往返。
+ * ⚠️ 第一轮这里写的是"退格是逐字的、只有退成空才算范围变化，所以不能无条件回顶" ——
+ * **那句话已作废**（老大真机反馈：退到一半时列表同样重筛了）。现在逐字退也每一下都回顶。
+ *
+ * ⚠️ 焦点会**自动回到搜索框**：宿主 `setSubInputValue` 末尾硬编码调了 `subInputFocus()`
+ * （同 `typeIntoSearch` 那段的说明）。这恰好是我们想要的 —— 连按退格时，
+ * 后面几下由搜索框自己处理，一个字一个字地退，全程碰不到"删数据"那条分支。
+ */
+function backspaceSearch(): void {
+  const next = backspaceQuery(keyword.value)
+  if (next === null) return
+  try {
+    zt().setSubInputValue(next)
+  } catch {
+    /* 写不进框就只改状态 */
+  }
+  commitTypedQuery(next)
 }
 
 /**
@@ -532,10 +611,8 @@ function move(delta: number): void {
 
 /* ---------------------------------------------------------------- 动作 */
 
-async function pasteActive(): Promise<void> {
-  const row = activeRow.value
-  if (!row) return
-
+/** 把某一条粘出去。历史走宿主、收藏走自己那条路 —— 两种行都是同一个动作 */
+async function pasteRow(row: Row): Promise<void> {
   // 历史记录优先走宿主的 write：它自己会关窗、切回上一个应用、模拟粘贴
   if (row.item) {
     await zt().clipboard.write(row.item.id, true)
@@ -544,6 +621,25 @@ async function pasteActive(): Promise<void> {
   // 收藏项没有宿主 id，只能自己把内容写回去（宿主同样会关窗粘贴）
   // 不弹提示（老大 09-16 要求去掉全部 toast）
   await pasteOne(row.data)
+}
+
+async function pasteActive(): Promise<void> {
+  const row = activeRow.value
+  if (!row) return
+  await pasteRow(row)
+}
+
+/**
+ * `⌘1`–`⌘9`：直接粘贴列表里的第 N 条（0 基下标）。
+ *
+ * ⚠️ 取的是 **`visibleRows`** —— 跟行尾显示的序号、跟模板里的 `v-for` 是同一份。
+ * 另算一份「前 9 条」迟早会错位（渲染窗口、分类过滤、收藏视图三条路都得对上），
+ * 到时候按 ⌘3 粘到的不是眼睛看到的第 3 条，而且极难复现。
+ */
+async function pasteAt(slot: number): Promise<void> {
+  const row = visibleRows.value[slot]
+  if (!row) return
+  await pasteRow(row)
 }
 
 function copyActive(): void {
@@ -572,9 +668,23 @@ async function toggleFavorite(): Promise<void> {
   if (view.value === 'favorites') syncSelection()
 }
 
+/**
+ * 删当前这一条。
+ *
+ * 「要不要先问一句」是**设置项**（`confirmDelete`），默认问。
+ * 关掉它的人多半是键盘流：弹框对键盘流是打断 —— 删一条要按两次。
+ *
+ * ⚠️ 关掉之后**没有撤销**：宿主的 `deleteItem` 是硬删，图像连磁盘文件都会一起 unlink
+ * （已核实，见 REFERENCE §26.1-A）。所以这一档是「知道自己在按什么」的人用的。
+ * ⚠️ 只管单条。**清空**（`askClear`）不受这个开关影响 —— 那个一次几十上百条，必须问。
+ */
 function askRemove(): void {
   const row = activeRow.value
   if (!row) return
+  if (!settings.value.confirmDelete) {
+    void runRemove()
+    return
+  }
   const text = view.value === 'favorites' ? '删除这条收藏？' : '删除这条记录？'
   void openConfirm(text, true, runRemove)
 }
@@ -797,8 +907,12 @@ function onAnyScroll(e: Event): void {
  * 开 / 关设置面板。
  *
  * 面板**贴在窗口右边一整条**（CSS 里 `top/right/bottom: 0` 钉死），不是挂在「设置」按钮上的浮层 ——
- * 所以这里只有开关状态，没有"量尺寸、算坐标"那一步。它盖住右边那条，
- * 左边的列表照样看得见、点得到，因此也不配压暗层（它是面板，不是模态）。
+ * 所以这里只有开关状态，没有"量尺寸、算坐标"那一步。打开时列表 / 空态 / 底栏会按 `--sheet-w`
+ * 让出右边这一条（样式里 `.root.sheet-open` 那几条），它底下没有内容，
+ * 因此也不配压暗层（它是面板，不是模态）。
+ *
+ * 下面这条 toggle 现在真的能用了：底栏那颗「设置」不再被面板盖住，点得到第二下。
+ * ⌘/ 走的也是这一条。
  */
 function openSettings(): void {
   const willOpen = !settingsOpen.value
@@ -808,24 +922,12 @@ function openSettings(): void {
   confirmBox.value = null // 一次只留一个浮层
 }
 
-/**
- * 「底栏」四档各自的一句说明。**必须写**：后两档都是「平时看不见」，
- * 光看「淡入 / 全隐」两个词分不出区别，而选错了会直接影响怎么开设置。
- *
- * 修饰键走 `modKey()` 分平台 —— 提示里那个 ⌘ 在 Windows 上得显示成 Ctrl。
+/*
+ * 原来这里有个 `footHint` computed：给「底栏」那一组算一句说明（四档各一句）。
+ * 09-17 面板去掉全部说明文字之后它没有出口了，**连同那四句一起删掉** ——
+ * 那四句（尤其「淡入 / 全隐」两档的区别、以及全隐只能靠 ⌘/ 开设置）
+ * 已经搬进 README 的「设置」一节，改档位时记得同步那边。
  */
-const footHint = computed<string>(() => {
-  switch (settings.value.foot) {
-    case 'full':
-      return '完整 —— 键位提示 + 设置 / 清空，现在的样子'
-    case 'lean':
-      return '精简 —— 去掉左边整排键位提示，设置 / 清空还在'
-    case 'fade':
-      return '淡入 —— 平时不占地方、内容铺到窗口底边；鼠标贴到最下缘才浮出设置 / 清空'
-    default:
-      return `全隐 —— 整行都没有、鼠标没入口；按 ${modKey('/')} 开设置`
-  }
-})
 
 /**
  * 改设置的唯一出口：本地状态、落库、落到 CSS 变量，三个地方一起走。
@@ -965,6 +1067,20 @@ function onKeydown(e: KeyboardEvent): void {
 
   e.preventDefault()
 
+  /*
+   * ⌘1–⌘9 秒贴：直接粘第 N 条，不经过选中态。
+   *
+   * 放在 switch 前面而不是塞一个 case：它是一族（九条）动作，塞进 switch 只能靠 default 兜，
+   * 而 default 的站位又容易读错。判定本身在 `lib/keys.ts` 的 `withMod` 里，这里只取下标。
+   *
+   * ⚠️ 它跟 ⌘K 一样**要求焦点已经在插件里**（数字键不在宿主那六个键的白名单里）。
+   */
+  const slot = pasteSlot(action)
+  if (slot !== null) {
+    void pasteAt(slot)
+    return
+  }
+
   switch (action) {
     case 'up':
       // 一按方向键就是"我在用键盘浏览" —— 把焦点从搜索框让给插件，
@@ -982,6 +1098,10 @@ function onKeydown(e: KeyboardEvent): void {
       break
     case 'remove':
       askRemove()
+      break
+    case 'backspaceSearch':
+      // 退格：只退搜索框，不删数据（09-17 改，详见函数上的说明）
+      backspaceSearch()
       break
     case 'focusSearch':
       focusSearch()
@@ -1127,10 +1247,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="rootRef" class="root" :class="'mark-' + settings.mark">
+  <div ref="rootRef" class="root" :class="['mark-' + settings.mark, { 'sheet-open': settingsOpen }]">
     <div v-if="rows.length" ref="listRef" class="list">
       <div
-        v-for="row in visibleRows"
+        v-for="(row, i) in visibleRows"
         :key="row.key"
         class="row"
         :class="{
@@ -1165,13 +1285,20 @@ onUnmounted(() => {
 
         <div class="t">{{ row.preview }}</div>
 
-        <!-- 行尾一块地，两种内容轮流用：
-             平时显示类型标签（文本 / 图像 / 文件），鼠标划上去或这行是当前行时，
-             标签淡出、换成收藏与删除两枚按钮。位置是同一个盒子，所以切换时不跳。
+        <!-- 行尾那一格。三样东西，各自可以在设置里关掉：
+               · 序号（只给前 9 行）—— 配 ⌘1–⌘9 秒贴
+               · 类型标签（文本 / 链接 / 图像 / 文件）
+               · 收藏 / 删除两枚按钮 —— **鼠标划过、或这行是当前行**时出现（两者一致）；
+                 它出现时上面两样在这一格让位（同一个位置叠着，见下面对应的 CSS）
+             按钮是 absolute 叠在这一格的右端、靠透明度切换，所以它出现/消失都不改行宽
+             （`.tail-acts` 给它留了固定宽度）。三样都不开就是彻底没有行尾。
+             ⚠️ 序号必须取 `v-for` 的下标 —— 跟 `pasteAt()` 取的是同一个 `visibleRows`，
+                另算一份迟早错位（按 ⌘3 粘到第 4 条）。
              按钮都得 .stop，不然点它们会连带触发行的 click（改选中）/ dblclick（复制）。 -->
-        <div class="tail" @dblclick.stop>
-          <span class="tag">{{ row.label }}</span>
-          <div class="acts">
+        <div class="tail" :class="{ 'tail-acts': settings.tailActs }" @dblclick.stop>
+          <span v-if="settings.tailIndex && i < 9" class="num">{{ i + 1 }}</span>
+          <span v-if="settings.tailType" class="tag">{{ row.label }}</span>
+          <div v-if="settings.tailActs" class="acts">
             <button
               class="act"
               :class="{ lit: row.favored }"
@@ -1220,9 +1347,15 @@ onUnmounted(() => {
          左边一条极淡的键位提示（键位不写在界面上就没人知道）—— 只有「完整」档才有；
          右边两个入口，除「全隐」外三档都有。
          「收藏」也提示：⌘K 是收藏当前项**唯一**的键盘入口（⌘D 被宿主拦给「分离插件」，
-         界面改不掉），这条路径不给提示就等于没有。所以提示是六项。
-         「设置」也提示：⌘/ 原先在整个界面上**一处都没写** —— 只有设置面板里
-         「底栏 = 全隐」那句解释提到它，等于藏在设置里（不翻设置就发现不了）。
+         界面改不掉），这条路径不给提示就等于没有。
+         「⌘1–⌘9」也提示（09-17 老大提的，原话「怎么老是忘记这个」）：这一族键在界面上
+         **一处都没有** —— 行尾那列「序号」默认还是**关**的，等于连"行尾有号码"这条线索
+         默认也没有；不写进底栏它就跟不存在一样。⚠️ 序号关掉只是**看不见号码**，
+         键本身一直在（取的是渲染列表的下标，见下方 tail 那段）。所以提示是七项。
+         它排在 Enter 后面：两条都在说"粘贴"（Enter 粘选中的那条，⌘1–⌘9 直接粘第 N 条）。
+         「设置」也提示：⌘/ 原先在整个界面上**一处都没写** —— 只在设置面板里那句
+         「全隐 = 只能按 ⌘/ 开设置」的解释里提过（09-17 面板去文案后**连那句也没了**，
+         不写进底栏就彻底没地方知道它）。
          放在最末：`.hints` 是 `overflow: hidden`，窄窗口会**从右边静默截断**，
          所以最不常用的那一项排最后，先被截掉的也是它。
          修饰键写法跟平台走（mac ⌘ / 其它 Ctrl），走 lib/platform.ts 的 modKey()——
@@ -1243,6 +1376,7 @@ onUnmounted(() => {
           <span><kbd>↑↓</kbd>选择</span>
           <span><kbd>Tab</kbd>分类</span>
           <span><kbd>Enter</kbd>粘贴</span>
+          <span><kbd>{{ modKey('1') }}–{{ modKey('9') }}</kbd>秒贴</span>
           <span><kbd>{{ modKey('K') }}</kbd>收藏</span>
           <span><kbd>Esc</kbd>返回</span>
           <span><kbd>{{ modKey('/') }}</kbd>设置</span>
@@ -1253,102 +1387,151 @@ onUnmounted(() => {
     </div>
 
     <!-- 设置：宿主不给插件设置页，只能自己画一个。
-         它贴在窗口右边一整条（top/right/bottom: 0），跟列表并排 —— 位置在 CSS 里钉死，
-         不用量也不用算。它左边的列表没有被盖住，所以不配压暗层：它是「面板」，不是「模态」。
-         关掉的方式：**点左边列表那一大片**（onWindowMouseDown 的 `!el.closest('.sheet')`）、或按 Esc
-         （走 Esc 阶梯里那级）。
-         ⚠️「再按一次设置」这条不成立 —— 面板通到窗口底，那颗「设置」按钮被它压在下面点不到。
-         `openSettings()` 里那条 toggle 分支留着只为 ⌘/ 这条键盘路径，别在文案里承诺"再点一次关掉"。 -->
+         它贴在窗口右边一整条（top/right/bottom: 0），这次是**真占位置**的并排 ——
+         打开时列表 / 空态 / 底栏按 `--sheet-w` 让出右边这一条（见样式里「设置面板」一节），
+         所以它底下没有任何内容，也就不配压暗层：它是「面板」，不是「模态」。
+         关掉的方式有三条：**点左边列表那一大片**（onWindowMouseDown 的 `!el.closest('.sheet')`）、
+         **再点一次底栏那颗「设置」**（它现在没被面板盖住了）、或按 Esc（走 Esc 阶梯里那级）。 -->
     <div v-if="settingsOpen" class="sheet">
-      <div class="cap">偏好设置</div>
+      <!--
+        可滚的那一段，也是面板唯一的内边距盒子（见样式里 `.sheet` 那段说明）。
 
-      <div class="grp">
-        <div class="lbl">强调色</div>
-        <div class="dots">
-          <button
-            class="dot auto"
-            :class="{ on: settings.accent === 'auto' }"
-            @click="updateSettings({ accent: 'auto' })"
-          >
-            默认
-          </button>
-          <button
-            v-for="k in ACCENT_KEYS"
-            :key="k"
-            class="dot"
-            :class="{ on: settings.accent === k }"
-            :style="{ background: accentSwatch(k, isDark) }"
-            @click="updateSettings({ accent: k })"
-          ></button>
+        ★ 09-17 起，**面板里只有控件、没有一句说明文字** —— 连标题「偏好设置」也去掉了。
+          老大原话：「每一项的文字描述太多了……详细使用介绍可以在 README 里加上」。
+          所以这里既没有 `.cap`、每个组下面也没有 `.hint`、开关下面也没有 `.ds`。
+          **想解释某个设置是干什么的，改 README，别往这里加字。**
+      -->
+      <div class="sheet-body">
+        <div class="grp">
+          <div class="lbl">底色</div>
+          <div class="dots">
+            <button
+              class="dot auto"
+              :class="{ on: settings.bg === 'auto' }"
+              @click="updateSettings({ bg: 'auto' })"
+            >
+              默认
+            </button>
+            <button
+              v-for="p in BG_PRESETS"
+              :key="p.key"
+              class="dot"
+              :class="{ on: settings.bg === p.key }"
+              :style="{ background: resolveBg(p.key, isDark) }"
+              @click="updateSettings({ bg: p.key })"
+            ></button>
+          </div>
         </div>
-        <div class="hint">
-          「默认」直接用 ZTools 自己的主题色 —— 宿主换了色这边跟着变；后面 12 个色点是给自己另选一个
-        </div>
-      </div>
 
-      <div class="grp">
-        <div class="lbl">底色</div>
-        <div class="dots">
-          <button
-            class="dot auto"
-            :class="{ on: settings.bg === 'auto' }"
-            @click="updateSettings({ bg: 'auto' })"
-          >
-            默认
-          </button>
-          <button
-            v-for="p in BG_PRESETS"
-            :key="p.key"
-            class="dot"
-            :class="{ on: settings.bg === p.key }"
-            :style="{ background: resolveBg(p.key, isDark) }"
-            @click="updateSettings({ bg: p.key })"
-          ></button>
+        <div class="grp">
+          <div class="lbl">强调色</div>
+          <div class="dots">
+            <button
+              class="dot auto"
+              :class="{ on: settings.accent === 'auto' }"
+              @click="updateSettings({ accent: 'auto' })"
+            >
+              默认
+            </button>
+            <button
+              v-for="k in ACCENT_KEYS"
+              :key="k"
+              class="dot"
+              :class="{ on: settings.accent === k }"
+              :style="{ background: accentSwatch(k, isDark) }"
+              @click="updateSettings({ accent: k })"
+            ></button>
+          </div>
         </div>
-        <div class="hint">
-          「默认」不画底，露出 ZTools 窗口自己的材质 —— 跟顶部搜索框零色差，深浅色也自动跟着走；后面四个是实底
-        </div>
-      </div>
 
-      <div class="grp">
-        <div class="lbl">选中项</div>
-        <div class="chips">
-          <button
-            v-for="m in MARK_CHOICES"
-            :key="m.v"
-            class="chip"
-            :class="{ on: settings.mark === m.v }"
-            @click="updateSettings({ mark: m.v })"
-          >
-            {{ m.label }}
-          </button>
-        </div>
-        <div class="hint">描框 —— 只描一圈主题色；底色 —— 铺一层 13% 淡底；实心 —— 整行铺满主题色、字反白</div>
-      </div>
+        <!--
+          ────────────────────────────────────────────────────────────────
+          ★ 09-17 老大要求：按「控件类型」分三段，段内按行长**从短到长**（短的在上面，逐级变宽）。
+            ① 色点段：底色（4 颗、一行）→ 强调色（13 颗、两行）
+            ② 选中段：行尾（2 颗）→ 选中项（3 颗）→ 底栏（4 颗）
+            ③ 开关段：行尾按钮 / 显示详情 / 删除前确认
+          为什么不按"主题"排（比如让「行尾按钮」贴着「行尾」）：那样三种控件形状会一格一格
+          交替出现 —— 色点、药丸、开关、药丸、开关…… 右边缘那一列开关被药丸行打断，看着毛躁。
+          同形状的挨在一起，面板才有节奏。段与段之间靠 `.blk` 多留一点空。
 
-      <div class="grp">
-        <div class="lbl">底栏</div>
-        <div class="chips">
-          <button
-            v-for="f in FOOT_CHOICES"
-            :key="f.v"
-            class="chip"
-            :class="{ on: settings.foot === f.v }"
-            @click="updateSettings({ foot: f.v })"
-          >
-            {{ f.label }}
-          </button>
+          ⚠️ **方向是「短 → 长」**，别搞反（我第一版就做反了）：老大原话「为什么不是每个类都是从
+             短到长呢，你是从长到短」。他给的判据很直接 —— 底色段 4 颗在 13 颗上面、行尾 2 颗在
+             底栏 4 颗上面。别再拿"重的放上面更稳"这种直觉改回长→短。
+          ⚠️ 开关那三行的控件宽度**完全一样**（都是"左标题 + 右侧开关"的满宽行），按颗数没有可排的；
+             按**标签字数**排恰好也就是现在的先后（行尾按钮 4 / 显示详情 4 / 删除前确认 5），所以不动。
+        -->
+        <!-- 行尾：**多选**（跟色点一样是「点一下选上、再点一下取消」，区别只是这里能同时选两个）。
+             两个都不选 = 行尾什么都没有。序号和类型是两件独立的事，不该互相顶掉 —— 不做成三选一。 -->
+        <div class="grp blk">
+          <div class="lbl">行尾</div>
+          <div class="chips">
+            <button
+              class="chip"
+              :class="{ on: settings.tailType }"
+              @click="updateSettings({ tailType: !settings.tailType })"
+            >
+              类型
+            </button>
+            <button
+              class="chip"
+              :class="{ on: settings.tailIndex }"
+              @click="updateSettings({ tailIndex: !settings.tailIndex })"
+            >
+              序号
+            </button>
+          </div>
         </div>
-        <div class="hint">{{ footHint }}</div>
-      </div>
 
-      <button class="opt" @click="updateSettings({ peek: !settings.peek })">
-        <span class="txt">
+        <div class="grp">
+          <div class="lbl">选中项</div>
+          <div class="chips">
+            <button
+              v-for="m in MARK_CHOICES"
+              :key="m.v"
+              class="chip"
+              :class="{ on: settings.mark === m.v }"
+              @click="updateSettings({ mark: m.v })"
+            >
+              {{ m.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="grp">
+          <div class="lbl">底栏</div>
+          <div class="chips">
+            <button
+              v-for="f in FOOT_CHOICES"
+              :key="f.v"
+              class="chip"
+              :class="{ on: settings.foot === f.v }"
+              @click="updateSettings({ foot: f.v })"
+            >
+              {{ f.label }}
+            </button>
+          </div>
+        </div>
+
+        <button class="opt blk" @click="updateSettings({ tailActs: !settings.tailActs })">
+          <span class="nm">行尾按钮</span>
+          <span class="sw" :class="{ on: settings.tailActs }"><i /></span>
+        </button>
+
+        <button class="opt" @click="updateSettings({ peek: !settings.peek })">
           <span class="nm">显示详情</span>
-          <span class="ds">选中图片、或内容显示不全的行时，在旁边浮出完整内容；换一行就收起</span>
-        </span>
-        <span class="sw" :class="{ on: settings.peek }"><i /></span>
-      </button>
+          <span class="sw" :class="{ on: settings.peek }"><i /></span>
+        </button>
+
+        <!--
+          ⚠️ 关掉之后**没有撤销**：宿主删了就删了，图像连磁盘文件都会一起 unlink。
+          这句提醒已经**从面板挪进 README**（老大要求面板不写文案）——
+          以后改这块时别顺手写出"关了也找得回来"之类的说法。只管单条，清空永远会问。
+        -->
+        <button class="opt" @click="updateSettings({ confirmDelete: !settings.confirmDelete })">
+          <span class="nm">删除前确认</span>
+          <span class="sw" :class="{ on: settings.confirmDelete }"><i /></span>
+        </button>
+      </div>
     </div>
 
     <!-- 确认框：**居中**（位置全在 `.mask` 那条 flex 里，JS 不参与）。
@@ -1379,6 +1562,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* 设置面板的宽度。面板开着时列表 / 空态 / 底栏按这个值让位（见下面「设置面板」一节），
+     面板自己也拿它当宽度 —— 两处必须是同一个数，不然让出来的地方面板填不满，
+     底下会漏出一条还能被行铺到的缝。 */
+  --sheet-w: min(300px, calc(100vw - 24px));
 }
 
 /* 列表 */
@@ -1396,8 +1583,24 @@ onUnmounted(() => {
   height: var(--row-h);
   padding: 0 var(--pad-x);
   margin-bottom: 1px;
-  border-radius: var(--radius-row);
+  border-radius: var(--radius-md);
   box-sizing: border-box;
+  /* 「底色」档那根左竖条的定位基准。
+     ⚠️ 删了它，竖条会往上找到 `.root`（也是 relative）⇒ 跑到面板最左边去。
+     行内别的东西不受影响：`.acts` 的基准是更近的 `.tail`（自己也是 relative）。 */
+  position: relative;
+  /*
+   * ★ 120ms 低幅度缓动（09-17，老大提的）：**这里是全屏最高频的一处动效** ——
+   * 鼠标扫过、按 ↑↓ 一行行挪，改的都是 background / box-shadow / color，
+   * 之前是硬切（瞬时跳变），一屏几十行看着就"廉价"。
+   *
+   * ⚠️ **只给 `.row` 加，不给行内零件加**：实心档（mark-solid）铺满时字要反白，
+   *    那牵涉 `.t` / `.thumb` / `.ficon` / `.tag` / `.num` / `.act` 六七个选择器，
+   *    全加一遍又是一批散落声明；而行底色 120ms 滑过去时，字色那点瞬变基本看不出来。
+   *    （真要让"字也滑"，落点是那几条**基础规则**，不是下面 `.row.on` 那些复合选择器 ——
+   *      加在复合选择器上只有"退出选中"那一半会过渡，进去时仍然是硬切。）
+   */
+  transition: background 0.12s ease, box-shadow 0.12s ease, color 0.12s ease;
 }
 .row.tall {
   height: var(--row-h-tall);
@@ -1414,6 +1617,39 @@ onUnmounted(() => {
            白字在上面只有 2:1 对比度、直接糊，所以用 theme.ts 算好的 `--row-on-tx`。 */
 .root.mark-tint .row.on {
   background: var(--accent-soft);
+}
+/*
+ * ★ 底色档的左竖条（09-17 晚老大定，方案 B）。
+ *
+ * 渊源别搞反：09-14 先做过「13% 淡底 + 左竖条」，真机上被老大撤了
+ * （原话「为什么选中中会有个竖线，我感觉不好看」）；09-17 他又拿参考图重新提。
+ * 这次的结论是**不新开档位，只并进「底色」档** —— 单为"一根线"多开一档，
+ * 等于把同一个选择拆成两个，让人多纠结一次。
+ *
+ * ⚠️ 伪元素**常驻、只切 opacity**，不是写成 `.row.on::before`：
+ *    后者会让竖条凭空出现，跟行底色那 120ms 的淡入对不上拍，切换时会"闪"一下。
+ * ⚠️ 只有 tint 档有竖条。border 档描的就是一圈框、solid 档整行铺满，
+ *    那两档再加一根竖条就是三层装饰 —— 别顺手给它们也来一根。
+ * ⚠️ 竖条落在行内边距（`--pad-x: 9px`）里，占 0~3px，文字从 9px 起 ⇒ 天然留 6px，
+ *    不需要给 `.t` 补 padding。
+ * ⚠️ 圆角用 `--radius-pill`（阶梯内），**别顺手写 2px**：3px 宽的盒子上一写 2px 就跳出
+ *    「圆角只有三档」那条红线（测试会红）。999px 在这么窄的盒子上会被按比例压到 1.5px，
+ *    正好是两端半圆 —— 就是这张条子想要的样子。
+ */
+.root.mark-tint .row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.root.mark-tint .row.on::before {
+  opacity: 1;
 }
 .root.mark-border .row.on {
   background: transparent;
@@ -1435,6 +1671,10 @@ onUnmounted(() => {
 /* 类型标签平时是 --tx-3 的灰字，铺在实心主题色上同样会糊 —— 一并反白 */
 .root.mark-solid .row.on .tag {
   background: rgba(var(--on-accent-rgb), 0.18);
+  color: var(--row-on-tx);
+}
+/* 序号没有那个底，只要反白 —— 漏了它这一行在实心主题色上就是一团看不见的灰字 */
+.root.mark-solid .row.on .num {
   color: var(--row-on-tx);
 }
 .root.mark-solid .row.on .act {
@@ -1474,7 +1714,7 @@ onUnmounted(() => {
   flex: none;
   width: 32px;
   height: 24px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   object-fit: cover;
   background: rgba(127, 127, 127, 0.16);
   display: flex;
@@ -1497,22 +1737,36 @@ onUnmounted(() => {
   height: 15px;
 }
 
-/* 行尾那一格：类型标签 ←→ 收藏/删除 两枚按钮，同一个位置轮流用。
-   两样东西都放好了叠在一起，靠透明度切换 —— 所以鼠标划过时行宽不会跳。
-   这就是鼠标唯一的操作入口（原先的右键菜单已删，功能跟这两枚按钮完全重复）；
+/* 行尾那一格。三样东西可以并存，各自能在设置里关掉：序号、类型标签、两枚按钮。
+   两个标签是普通流里的元素；按钮是 absolute 叠在这一格右端、靠透明度切换 ——
+   所以按钮出现/消失都不改行宽（`.tail-acts` 那 50px 就是给它留的）。
+   按钮是鼠标唯一的操作入口（原先的右键菜单已删，功能跟这两枚按钮完全重复）；
    键盘用户走 Delete。两边是同一套逻辑。 */
 .tail {
   flex: none;
   position: relative;
   display: flex;
   align-items: center;
+  gap: 6px;
   justify-content: flex-end;
-  min-width: 50px; /* 正好放得下两枚 22px 按钮，切换时不给行宽造成变化 */
   height: 22px;
+}
+/* 只给两枚 22px 按钮留位。关掉按钮之后这 50px 也该还回去 ——
+   不然一块空留白会按"行尾"的直觉压着内容，白占地方。 */
+.tail.tail-acts {
+  min-width: 50px;
+}
+/* 序号：给 ⌘1–⌘9 用的，刻意做得很淡 —— 它是熟练之后的参考线，不是内容本身。
+   tabular-nums 让每个数字占同样宽，几十行竖着排不会左右跳。 */
+.num {
+  color: var(--tx-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.15s;
 }
 .tag {
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: rgba(127, 127, 127, 0.1);
   color: var(--tx-3);
   font-size: 11px;
@@ -1530,8 +1784,25 @@ onUnmounted(() => {
   pointer-events: none;
   transition: opacity 0.15s;
 }
-.row:hover .tag,
-.row.on .tag {
+/*
+ * ★ 两枚按钮的出场条件：**鼠标划过、或者「这行是当前行」—— 两者一模一样**。
+ *
+ * 09-17 晚回退过一次：中间有一版只跟 `:hover` 走，理由是"键盘流里点不到按钮，
+ * 却把「这行是什么类型 / 序号几」盖掉了"。真机一看是错的 —— 同一行在两套输入下
+ * 长得不一样，键盘选中的行右端空着一格（老大原话「真实选中行却没有显示出来，这是bug」）。
+ * **现在 hover 与 `.on` 表现完全一致，别再让它们分叉。**
+ *
+ * ⚠️ 这条代价是有意接受的：开着「类型 / 序号」时，这两样在这一格上给按钮让位 ——
+ *    那一格是 absolute 叠着的，二者只能取一；要"都看得见"就得给 `.tail` 永久加宽，
+ *    那是拿**每一行**的文本宽度去换（整个列表都短一截），不划算。
+ *
+ * ⚠️ 淡出那两条必须带 `.tail-acts`：按钮关掉时若还留着淡出，
+ * 标签会在鼠标划过 / 选中时凭空消失，而底下没有东西顶上来。
+ */
+.row:hover .tail-acts .tag,
+.row.on .tail-acts .tag,
+.row:hover .tail-acts .num,
+.row.on .tail-acts .num {
   opacity: 0;
 }
 .row:hover .acts,
@@ -1547,7 +1818,8 @@ onUnmounted(() => {
   height: 22px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  /* 5 → 4（09-17 收圆角）：它属于「行内小件」那一档，跟缩略图 / 键帽 / 类型标签同档 */
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--tx-2);
   cursor: pointer;
@@ -1636,7 +1908,7 @@ onUnmounted(() => {
 }
 kbd {
   padding: 1px 4px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: rgba(127, 127, 127, 0.12);
   color: var(--tx-2);
   font-family: inherit;
@@ -1661,7 +1933,8 @@ kbd {
   background: none;
   border: 0;
   padding: 2px 7px;
-  border-radius: var(--radius-row);
+  /* 跟行同一档（原来是 `--radius-row` = 6px，09-17 连行一起并进 8px 那一档）*/
+  border-radius: var(--radius-md);
   cursor: pointer;
   font-size: 12px;
   color: var(--tx-3);
@@ -1721,7 +1994,7 @@ kbd {
   z-index: 10;
   box-sizing: border-box;
   padding: 9px var(--pad-x);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-float);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16), 0 0 0 0.5px var(--line);
   overflow: auto;
@@ -1738,7 +2011,7 @@ kbd {
   display: block;
   margin: 0 auto;
   max-width: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .peek-files {
   margin: 0;
@@ -1771,14 +2044,51 @@ kbd {
 
 /* 设置面板 */
 /*
+ * ★ 面板打开时，列表 / 空态 / 底栏**让出右边一条**（`--sheet-w`）。
+ *
+ * 以前面板是 `position: fixed` 压在它们上面，代价有三处：
+ *   1. 行尾那一格（类型标签 ⇄ ☆/🗑）被盖住 —— 面板开着时鼠标动不了当前行；
+ *   2. 底栏两颗按钮（设置 / 清空）被盖住点不到，所以 `openSettings()` 里那条 toggle
+ *      一直没敢在文案里兑现；
+ *   3. 面板底下压着字，面板就必须铺一层恒实底（`--surface-float`），
+ *      于是「默认」档（面板透明、露宿主材质）下面板仍是白底，跟列表区有色差。
+ *
+ * 让位之后面板底下什么都没有，第 3 条自然消失 —— 面板改用 `--surface`，跟列表区同材质。
+ *
+ * 用 `margin-right`（缩盒子）而不是 `padding-right`（推内容）：`.list` 的盒子铺到哪儿，
+ * 那根 7px 自绘滚动条就在哪儿 —— 给 padding 的话滚动条仍然留在窗口最右边、
+ * 也就是面板底下，看不见也拖不到。
+ *
+ * `.foot.fade` 是 `absolute` + `left/right: 0`，这里不用给它单开一条：左右都写了、
+ * `width: auto` 时 margin 照样参与计算，它自己就缩了。
+ */
+.root.sheet-open .list,
+.root.sheet-open .empty,
+.root.sheet-open .foot {
+  margin-right: var(--sheet-w);
+}
+
+/*
  * 设置面板：**钉在窗口右边一整条**（上到下通高），跟列表并排 —— 不是浮在按钮上的小卡。
  *
  * 为什么不继续做浮层：它内容多（五组），浮起来得靠压暗层立层次、还盖住大半个列表；
  * 贴边则左边的内容原样可见可点，「看设置」和「对着列表调」不冲突 —— 所以这里也没有 mask。
  *
+ * 「并排」现在是**布局上**真的并排了（列表按 `--sheet-w` 让了位），不再只是"贴在右边"：
+ * 它底下没有任何内容，所以底色可以跟列表区一样取 `--surface` ——
+ * 「默认」档那一份是透明的（露宿主材质），不再是一块白底，跟列表的色差没有了。
+ * ⚠️ 改底色之前必须先有让位，只改底色就是真的穿透（09-16 试过，密集文字重影，否掉）。
+ *
  * 宽度跟窗口走：窄了跟着缩，不至于把列表挤没（最少给列表留 24px）。
  * 位置是 CSS 钉的，`App.vue` 那边不用再量尺寸算坐标。
- * 层次靠左边一条 0.5px 描边 + 一圈很淡的投影，**不加圆角** —— 它三面到边，圆角会露出窗口本色。
+ * 层次只靠左边一条 0.5px 描边，**不加圆角、也不加投影** —— 它三面到边，圆角会露出窗口本色；
+ * 投影是"浮在内容之上"才需要的东西，它现在是并排的一列，再往列表上压一圈 30px 的暗影
+ * 就它一处有阴影，跟列表区也不像同一种材质了（浮层的投影见 `.peek` / `.mask`）。
+ *
+ * ★ 结构是「面板（`.sheet`，管定位/描边/底色）+ 可滚内容（`.sheet-body`，管内边距/滚动）」。
+ * ⚠️ 09-17 之前 `.sheet` 上面还钉着一条标题 `.cap`，为了让标题不跟着滚才把滚动单独关在
+ * `.sheet-body` 里（`.cap` 已随「面板不写文案」一起去掉）。**两段结构保留**：
+ * 它是"内边距和滚动条在同一个盒子里"的写法，也省得滚动条跑到窗口最右边去。
  */
 .sheet {
   position: fixed;
@@ -1787,107 +2097,131 @@ kbd {
   bottom: 0;
   z-index: 18;
   box-sizing: border-box;
-  width: min(300px, calc(100vw - 24px));
-  padding: 0 16px 18px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  width: var(--sheet-w);
+  overflow: hidden;
   border-left: 0.5px solid var(--line);
-  background: var(--surface-float);
-  box-shadow: -12px 0 30px rgba(0, 0, 0, 0.08);
+  background: var(--surface);
 }
 /*
- * 面板标题。`sticky` 是必要的：内容滚下去之后面板里就只剩一堆色点和开关，
- * 没有一个「这是什么」的凭据。
+ * 可滚的内容段，也是面板**唯一**的内边距盒子：横向留白必须在这儿（放 `.sheet` 上，
+ * 那条 0.5px 描边和滚动条都会被推进来）。滚动条（7px 自绘）归它，
+ * 于是滚动条落在面板右侧内缘，不是窗口最右边。
  *
- * 左右负 margin 把它撑到面板两边 —— 标题下那条线要通到底，所以 `.sheet` 的横向 padding
- * 由它自己再加回来。背景必须写实色：sticky 元素不写背景，底下的内容会从字缝里透过去。
+ * 上边距给 16px：去掉标题之后，第一组标签直接对着窗口顶边，14px 显得有点顶。
  */
-.cap {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  margin: 0 -16px 14px;
-  padding: 13px 16px 11px;
-  border-bottom: 0.5px solid var(--line);
-  background: var(--surface-float);
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--tx-2);
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 16px 20px;
 }
 .grp {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
+/*
+ * 段间距。面板按控件类型分三段（色点 / 选中 / 开关），**新一段的第一行**加一次它。
+ * 只靠 `.grp` 那 16px 的话，三段会摊成一张平铺的清单，"分类放一起"看不出来；
+ * 加上它就是 **段间 28px、段内 16px**，三段的边界一眼可见。
+ * ⚠️ 跟 `.grp` 不会打架：`.grp` 只管 `margin-bottom`，这里只管 `margin-top`，
+ *   两个属性不重叠，所以不依赖源码顺序（跟 `.dot.auto` 那种靠特异性的情况不同）。
+ */
+.blk {
+  margin-top: 12px;
+}
+/*
+ * 组标题。**整个面板只有两档字号**（13 交互 / 12 说明），层级交给字重和颜色去做 ——
+ * 原来这里 11.5px、开关标题 13.5px、说明 11px，一共六个尺寸混着，看着就毛躁。
+ * ★ 颜色走 `--tx-label`（09-17 拆出来的**标签档**：浅 38% / 深 48%）——
+ * 不再跟行尾图标、键帽那些"内容"共用一个 42%：它只是分组名，该比内容再退一步。
+ */
 .lbl {
-  margin-bottom: 7px;
-  font-size: 11.5px;
-  color: var(--tx-2);
+  margin-bottom: 9px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tx-label);
 }
 .chips {
   display: flex;
-  gap: 6px;
+  gap: 10px;
 }
-.chip {
-  height: 24px;
-  padding: 0 9px;
+/*
+ * ★ 面板里的小按钮只有一种长相：**药丸**（`border-radius: var(--radius-pill)`）。
+ *   未选中 = 裸文字（透明底 + 次文本灰），选中 = 铺一层 `--accent-soft` 的淡底、
+ *   字取强调色、外面再晕一圈同色 —— **用光晕（Ring）表达选中，不用边框**。
+ *
+ *   ⚠️ 以前每颗都垫一层 `rgba(127,127,127,.1)` 的灰底，一排看过去像一排实心按钮；
+ *   面板「默认」档是透明的（露窗口毛玻璃），灰底在毛玻璃上尤其吵。
+ *   现在只有"选中的那一颗"有底，其余就是文字。
+ *   ⚠️ 光晕取 `--accent-soft`（强调色 13%）而不是实色 —— 实色环在浅色主题下就是
+ *   一道硬边，正是这次要换掉的东西。
+ *   ⚠️ `.dot.auto`（「默认」那颗）走同一套：它是药丸，不是色点。它比 `.chip`
+ *   多写一条 `width: auto` —— `.dot` 那个 14px 是给色点的，不能套到它头上。
+ */
+.chip,
+.dot.auto {
+  width: auto;
+  height: 26px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 6px;
-  background: rgba(127, 127, 127, 0.1);
+  border-radius: var(--radius-pill);
+  background: transparent;
   color: var(--tx-2);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
 }
-.chip.on {
+.chip:hover,
+.dot.auto:hover {
+  background: var(--row-hover);
+}
+.chip.on,
+.dot.auto.on {
   background: var(--accent-soft);
   color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.hint {
-  margin-top: 6px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--tx-3);
-}
-/* 「默认」+ 12 个色点，一行摆不下（面板内容区 252px），让它自己换行 */
+/* 「默认」+ 12 个色点，一行摆不下（面板内容区 268px），让它自己换行。
+   09-17 收敛：色点 20px → 14px、间距 8px → 12px（点小了但更透气，一行反而放得下更多）
+   ⚠️ `.hint`（组下面那行灰色说明）那条规则**已随"面板去文案"一起删掉** ——
+   面板里现在一个说明字都没有，要解释某个设置就改 README（见模板里那段注释）。 */
 .dots {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 .dot {
-  width: 20px;
-  height: 20px;
+  width: 14px;
+  height: 14px;
   padding: 0;
   border: 0;
   border-radius: 50%;
   cursor: pointer;
   box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.25);
 }
-/* 选中的色点：留一圈底色当缝、外面再套一圈中性环，免得跟色点本身撞色。
-   ⚠️ 缝要取 --surface-float（浮层自己的底色）而不是 --surface —— 色点在设置面板里，
-   而面板「默认」档下是透明的（露出窗口毛玻璃），拿它当缝就等于没缝。 */
+/*
+ * 选中的色点：留一圈底色当缝、外面再套一圈中性环，免得跟色点本身撞色。
+ * ⚠️ 缝要取 --surface-float（浮层自己的底色）而不是 --surface —— 色点在设置面板里，
+ * 而面板「默认」档下是透明的（露出窗口毛玻璃），拿它当缝就等于没缝。
+ * 09-17：环从 `--tx-2` 实色改成 35% 中性灰、缝和环一起放大两档 ——
+ * 点本身只有 14px，一道实色环会把它箍成一颗纽扣，灰环才是"光晕"。
+ * （「默认」那颗不是色点，是药丸，样式在上面那段 `.chip, .dot.auto` 里，别在这儿找。）
+ */
 .dot.on {
-  box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 3.5px var(--tx-2);
-}
-.dot.auto {
-  width: auto;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 6px;
-  background: rgba(127, 127, 127, 0.1);
-  color: var(--tx-2);
-  font-size: 11.5px;
-}
-.dot.auto.on {
-  background: var(--accent-soft);
-  color: var(--accent);
-  box-shadow: none;
+  box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 5px rgba(127, 127, 127, 0.35);
 }
 .opt {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   width: 100%;
+  /* 开关是**连着排的一整段**（行尾按钮 / 显示详情 / 删除前确认）——
+     09-17 重排后它们不再被药丸行打断（原来「底栏」夹在中间）。
+     段内的行距就靠这条 16px，段**上面**那一次额外空隙由 `.blk` 给。 */
+  margin-bottom: 16px;
   padding: 0;
   border: 0;
   background: none;
@@ -1895,29 +2229,36 @@ kbd {
   text-align: left;
   cursor: pointer;
 }
-.opt .txt {
+/* 最后一段的间距交给 `.sheet-body` 自己的 padding，别叠成两倍 */
+.sheet-body > :last-child {
+  margin-bottom: 0;
+}
+/*
+ * 开关那一行 = 「名字 + 开关」，跟上面几组是同一套排版（13px 的标签 + 右边的控件）。
+ *
+ * ⚠️ 名字用自己的 `flex: 1` 把开关顶到右边（原来这活儿在外层那个 `.txt` 包着的盒子上，
+ * 09-17 面板去掉说明文字后那层包装没用了，一起删）。`min-width: 0` 留着，
+ * 窄窗口下长名字先被压缩，不会把开关挤出面板。
+ * ⚠️ 颜色跟组标题一样走 `--tx-label`（**标签档**，浅 38% / 深 48%）：面板里没有文案之后，
+ * 每一行都长成"标签 + 控件"，名字再比组标题重就没有道理了。
+ */
+.opt .nm {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.opt .nm {
-  font-size: 13.5px;
-  color: var(--tx-1);
-}
-.opt .ds {
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--tx-2);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tx-label);
 }
 .sw {
   flex: none;
   position: relative;
   width: 34px;
   height: 20px;
-  margin-top: 1px;
-  border-radius: 10px;
+  /* 跟第一行 13px 的标题视觉居中（开关比那行字高 4px 上下，各让 2px）*/
+  margin-top: -2px;
+  /* 10 → 999：这个 10px 从来不是"中间值散落" —— 它是 20px 高的一半，也就是**胶囊端**。
+     写成 `--radius-pill` 之后语义才对，以后改轨道高度也不会留下一个错的数。 */
+  border-radius: var(--radius-pill);
   background: rgba(127, 127, 127, 0.3);
   transition: background 0.15s;
 }
@@ -1963,7 +2304,9 @@ kbd {
   max-height: calc(100vh - 24px);
   overflow-y: auto;
   padding: 16px 18px;
-  border-radius: 10px;
+  /* 10 → 8（09-17 收圆角）：跟详情浮层 `.peek` 同一档 —— 两个都是浮在内容上的卡片，
+     一个 8 一个 10 本来就是"顺手挑的数"，摆在同一屏里能看出不一样。 */
+  border-radius: var(--radius-md);
   background: var(--surface-float);
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.28), 0 0 0 0.5px var(--line);
   text-align: center;
@@ -1981,7 +2324,8 @@ kbd {
   flex: 1;
   height: 30px;
   border: 0.5px solid var(--line);
-  border-radius: 7px;
+  /* 7 → 8（09-17 收圆角）：它在确认框里，归「浮层」那一档 */
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--tx-1);
   font-size: 13px;

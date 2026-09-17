@@ -74,5 +74,46 @@ test('底栏四档都认，认不出退回完整', () => {
 
 test('多余的键一律丢掉，不往界面里带', () => {
   const s = normalizeSettings({ peek: true, theme: 'dark', accent: 'blue', 乱写: 1 })
-  assert.deepEqual(Object.keys(s).sort(), ['accent', 'bg', 'foot', 'mark', 'peek'])
+  assert.deepEqual(Object.keys(s).sort(), [
+    'accent',
+    'bg',
+    'confirmDelete',
+    'foot',
+    'mark',
+    'peek',
+    'tailActs',
+    'tailIndex',
+    'tailType'
+  ])
+})
+
+/*
+ * ★ 这一组锁的是「**加设置不能顺手改掉老用户的行为**」。
+ *
+ * `confirmDelete` / `tailType` / `tailActs` 的默认值是 `true`，而老版本存下来的文档里
+ * 这三个键**根本不存在**（`undefined`）。如果 normalize 写成 `=== true`，
+ * 所有老用户升级后会被悄悄关掉「删除前确认」和「行尾按钮」——
+ * 那不是加设置，是改别人已有的行为。所以这里专门断言 `undefined` 要落到 `true`。
+ */
+test('老文档缺字段时，默认 true 的项要补 true（不能因为 undefined 就变 false）', () => {
+  const old = normalizeSettings({ peek: true, accent: 'auto', mark: 'border', bg: 'auto', foot: 'full' })
+  assert.equal(old.confirmDelete, true)
+  assert.equal(old.tailType, true)
+  assert.equal(old.tailActs, true)
+  // 序号是默认 false 的那一类，缺字段就该是关的
+  assert.equal(old.tailIndex, false)
+})
+
+test('这四个新项：显式写的值要认', () => {
+  const s = normalizeSettings({ confirmDelete: false, tailType: false, tailIndex: true, tailActs: false })
+  assert.equal(s.confirmDelete, false)
+  assert.equal(s.tailType, false)
+  assert.equal(s.tailIndex, true)
+  assert.equal(s.tailActs, false)
+})
+
+test('默认 true 的项也认「垃圾值」—— 非 false 一律当开（不猜，只认显式关）', () => {
+  assert.equal(normalizeSettings({ confirmDelete: 0 }).confirmDelete, true)
+  assert.equal(normalizeSettings({ tailActs: 'no' }).tailActs, true)
+  assert.equal(normalizeSettings({ tailIndex: 'yes' }).tailIndex, false)
 })

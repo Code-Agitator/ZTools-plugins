@@ -5,6 +5,9 @@
   "description": "截图 OCR 翻译",
   "author": "Taitres",
   "version": "0.8.0",
+  "platform": [
+    "win32"
+  ],
   "main": "index.html",
   "preload": "preload/services.js",
   "logo": "logo.png",

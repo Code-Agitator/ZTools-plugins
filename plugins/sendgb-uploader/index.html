@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>SendGB 上传</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="bar">
+      <div class="brand"><span class="dot"></span>SendGB 上传</div>
+      <div class="actions">
+        <button id="btnSettings" class="ghost" title="设置">设置</button>
+      </div>
+    </header>
+
+    <div id="notReady" class="warn hidden"></div>
+
+    <div id="drop" class="drop">
+      <div class="drop-main">把文件拖进来，或点击选择</div>
+      <div class="drop-sub">自动上传 → 链接自动复制，免注册，单次最多 5GB</div>
+    </div>
+
+    <ul id="files" class="files hidden"></ul>
+
+    <div class="progress-row">
+      <div class="bar-bg"><div id="bar" class="bar-fill"></div></div>
+      <span id="pct" class="pct">0%</span>
+    </div>
+    <div id="status" class="status">等待文件</div>
+
+    <div class="result">
+      <input id="link" class="link" readonly placeholder="上传完成后这里出现下载链接" />
+      <button id="btnCopy" class="primary" disabled>复制链接</button>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="history">历史链接</button>
+      <button class="tab" data-tab="log">运行日志</button>
+      <button class="tab" data-tab="settings">设置</button>
+    </div>
+
+    <div class="panel" id="panel-history">
+      <div class="hist-header">
+        <span class="col-link">下载链接</span>
+        <span class="col-name">文件名称</span>
+        <span class="col-time">上传时间</span>
+        <span class="col-action">操作</span>
+      </div>
+      <ul id="history" class="hist"></ul>
+    </div>
+    <div class="panel hidden" id="panel-log"><pre id="log" class="log"></pre></div>
+    <div class="panel hidden" id="panel-settings">
+      <div class="setting-item">
+        <label class="check-label">
+          <input type="checkbox" id="chkShowBrowser" />
+          <span>上传时显示浏览器窗口（默认不勾选，后台静默运行）</span>
+        </label>
+      </div>
+      <div class="row">
+        <button id="btnEnv" class="ghost">检查环境</button>
+        <button id="btnKill" class="ghost">清理残留浏览器</button>
+        <button id="btnCancel" class="ghost danger">中止本次上传</button>
+      </div>
+      <pre id="env" class="log small"></pre>
+    </div>
+
+    <footer class="foot">
+      <span>免注册，单次最多 5GB（自动调用 Chrome / Edge，可在设置中开启窗口显示）</span>
+    </footer>
+
+    <div id="confirmModal" class="modal-overlay hidden">
+      <div class="modal-box">
+        <div class="modal-title">删除确认</div>
+        <div id="confirmMsg" class="modal-body">确定要删除此条记录吗？</div>
+        <div class="modal-actions">
+          <button id="btnConfirmCancel" class="ghost">取消</button>
+          <button id="btnConfirmOk" class="danger-btn">确定删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

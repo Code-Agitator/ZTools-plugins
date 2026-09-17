@@ -106,6 +106,17 @@ async function onScan() {
   await withBusy(async () => {
     await api().runScan()
     await loadAll()
+    const cmdCount = apps.value.filter(
+      (a) => a.source === 'ztools' || a.source === 'plugin',
+    ).length
+    const message =
+      cmdCount > 0
+        ? `扫描完成：共 ${apps.value.length} 个应用（含 ${cmdCount} 条 ZTools 指令）`
+        : `扫描完成：共 ${apps.value.length} 个应用`
+    const showToast = window.ztools?.showToast
+    if (typeof showToast === 'function') {
+      void Promise.resolve(showToast(message))
+    }
   })
 }
 

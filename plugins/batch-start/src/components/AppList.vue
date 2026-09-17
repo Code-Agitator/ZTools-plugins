@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { AppDoc, CategoryDoc } from '../types'
+
+export type AppSourceFilter = 'all' | 'system' | 'command'
 
 const props = defineProps<{
   apps: AppDoc[]
@@ -17,15 +19,27 @@ const emit = defineEmits<{
   addSelectedToGroup: []
 }>()
 
+const sourceFilter = ref<AppSourceFilter>('all')
+
+function isCommandApp(app: AppDoc): boolean {
+  return app.source === 'ztools' || app.source === 'plugin'
+}
+
 const filteredApps = computed(() => {
   const q = props.searchQuery.trim().toLowerCase()
   return props.apps.filter((app) => {
     const inCategory = app.categoryId === props.selectedCategoryId
     if (!inCategory) return false
+
+    if (sourceFilter.value === 'system' && isCommandApp(app)) return false
+    if (sourceFilter.value === 'command' && !isCommandApp(app)) return false
+
     if (!q) return true
-    return (
-      app.name.toLowerCase().includes(q) || app.path.toLowerCase().includes(q)
-    )
+    const haystack = [app.name, app.path, app.pluginTitle, app.pluginName]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    return haystack.includes(q)
   })
 })
 
@@ -35,6 +49,10 @@ function onAssign(appId: string, event: Event) {
   const value = (event.target as HTMLSelectElement).value
   emit('assignCategory', appId, value === '' ? null : value)
 }
+
+function onSourceFilterChange(event: Event) {
+  sourceFilter.value = (event.target as HTMLSelectElement).value as AppSourceFilter
+}
 </script>
 
 <template>
@@ -42,6 +60,16 @@ function onAssign(appId: string, event: Event) {
     <div class="panel-header">
       <span>应用</span>
       <div class="toolbar-row">
+        <select
+          class="source-filter"
+          :value="sourceFilter"
+          aria-label="按来源筛选"
+          @change="onSourceFilterChange"
+        >
+          <option value="all">全部</option>
+          <option value="system">系统应用</option>
+          <option value="command">指令</option>
+        </select>
         <input
           class="search-input"
           type="search"
@@ -61,7 +89,7 @@ function onAssign(appId: string, event: Event) {
     </div>
     <div class="panel-body">
       <div v-if="filteredApps.length === 0" class="empty-state">
-        <div>当前分类下没有应用</div>
+        <div>当前筛选条件下没有应用</div>
       </div>
       <div
         v-for="app in filteredApps"
@@ -76,8 +104,17 @@ function onAssign(appId: string, event: Event) {
         />
         <img v-if="app.icon" class="app-icon" :src="app.icon" alt="" />
         <div class="app-meta">
-          <div class="app-name">{{ app.name }}</div>
-          <div class="app-path muted">{{ app.path }}</div>
+          <div class="app-name">
+            {{ app.name }}
+            <span v-if="isCommandApp(app)" class="source-badge">指令</span>
+          </div>
+          <div class="app-path muted">
+            {{
+              isCommandApp(app)
+                ? app.pluginTitle || app.pluginName || app.path
+                : app.path
+            }}
+          </div>
         </div>
         <select
           class="cat-select"
@@ -101,9 +138,27 @@ function onAssign(appId: string, event: Event) {
   min-width: 0;
 }
 
-.search-input {
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-filter,
+.search-input,
+.cat-select {
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: #fff;
+}
+
+.source-filter {
+  padding: 4px 8px;
+  max-width: 110px;
+}
+
+.search-input {
   padding: 4px 8px;
   min-width: 160px;
 }
@@ -129,6 +184,20 @@ function onAssign(appId: string, event: Event) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #1d4ed8;
+  background: #dbeafe;
 }
 
 .app-path {
@@ -140,9 +209,6 @@ function onAssign(appId: string, event: Event) {
 
 .cat-select {
   max-width: 120px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
   padding: 3px 6px;
-  background: #fff;
 }
 </style>

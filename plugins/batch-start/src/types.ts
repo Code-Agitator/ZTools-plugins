@@ -1,5 +1,6 @@
 export type Platform = 'win32' | 'darwin' | 'linux'
-export type AppSource = 'scan' | 'manual'
+/** `ztools` = a divertible ZTools text command (not a desktop app) */
+export type AppSource = 'scan' | 'manual' | 'ztools' | 'plugin'
 
 export interface AppDoc {
   _id: string
@@ -10,6 +11,11 @@ export interface AppDoc {
   source: AppSource
   categoryId: string | null
   platform: Platform
+  /** Present when source is ztools (or legacy plugin) */
+  pluginName?: string
+  pluginTitle?: string
+  /** Divertible text cmd used with ztools.redirect */
+  launchCmd?: string | null
 }
 
 export interface CategoryDoc {

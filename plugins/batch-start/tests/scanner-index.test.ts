@@ -35,7 +35,11 @@ describe('runFullScan', () => {
     )
 
     const now = 1_700_000_000_000
-    await runFullScan(db, 'win32', { scanner, now: () => now })
+    await runFullScan(db, 'win32', {
+      scanner,
+      now: () => now,
+      scanZtoolsCommands: async () => [],
+    })
 
     const apps = await listApps(db)
     const paths = apps.map((a) => a.path.toLowerCase())

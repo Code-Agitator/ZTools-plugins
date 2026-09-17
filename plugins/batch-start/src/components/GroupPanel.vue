@@ -34,12 +34,19 @@ const appById = computed(() => new Map(props.apps.map((a) => [a._id, a])))
 
 const members = computed(() => {
   if (!props.draft) return []
-  return props.draft.appIds.map((id) => ({
-    id,
-    name: appById.value.get(id)?.name ?? id,
-    path: appById.value.get(id)?.path ?? '',
-    missing: !appById.value.has(id),
-  }))
+  return props.draft.appIds.map((id) => {
+    const app = appById.value.get(id)
+    return {
+      id,
+      name: app?.name ?? id,
+      path:
+        app?.source === 'ztools' || app?.source === 'plugin'
+          ? app.pluginTitle || app.pluginName || app.path
+          : (app?.path ?? ''),
+      isZtools: app?.source === 'ztools' || app?.source === 'plugin',
+      missing: !app,
+    }
+  })
 })
 
 const showUnsynced = computed(
@@ -117,7 +124,10 @@ function patchDraft(partial: Partial<GroupDraft>) {
           <div v-else class="member-list">
             <div v-for="m in members" :key="m.id" class="member-row">
               <div class="member-meta">
-                <div :class="{ missing: m.missing }">{{ m.name }}</div>
+                <div :class="{ missing: m.missing }">
+                  {{ m.name }}
+                  <span v-if="m.isZtools" class="source-badge">指令</span>
+                </div>
                 <div class="muted member-path">{{ m.path || m.id }}</div>
               </div>
               <button class="btn btn-sm" type="button" @click="emit('removeMember', m.id)">
@@ -209,6 +219,16 @@ function patchDraft(partial: Partial<GroupDraft>) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.source-badge {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #1d4ed8;
+  background: #dbeafe;
 }
 
 .missing {

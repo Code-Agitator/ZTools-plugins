@@ -31,8 +31,9 @@ import {
   saveGroup as saveGroupSvc,
   type GroupInput,
 } from './services/launchGroup'
-import { launchGroupApps } from './services/launcher'
+import { launchGroupApps, type LaunchTarget } from './services/launcher'
 import { runFullScan } from './services/scanner'
+import { isZtoolsCommandPath } from './services/scanner/ztoolsPlugins'
 import type {
   AppDoc,
   CategoryDoc,
@@ -55,6 +56,7 @@ type ZtoolsHost = {
   shellOpenPath: (fullPath: string) =>
     | Promise<{ success: boolean; error?: string }>
     | { success: boolean; error?: string }
+  redirect: (label: string | [string, string], payload?: string) => boolean
   getFileIcon?: (filePath: string) => string | null
 }
 
@@ -89,12 +91,25 @@ function manualOpenFilters(): Array<{ name: string; extensions: string[] }> | un
   return undefined
 }
 
-async function resolveGroupPaths(group: GroupDoc): Promise<string[]> {
+async function resolveGroupTargets(group: GroupDoc): Promise<LaunchTarget[]> {
   const apps = await listAppsSvc(db())
   const byId = new Map(apps.map((a) => [a._id, a]))
-  return group.appIds
-    .map((id) => byId.get(id)?.path)
-    .filter((p): p is string => !!p)
+  const targets: LaunchTarget[] = []
+  for (const id of group.appIds) {
+    const app = byId.get(id)
+    if (!app) continue
+    if (app.source === 'ztools' || app.source === 'plugin' || isZtoolsCommandPath(app.path)) {
+      targets.push({
+        key: app.path,
+        kind: 'ztools',
+        pluginTitle: app.pluginTitle || undefined,
+        launchCmd: app.launchCmd,
+      })
+    } else if (app.path) {
+      targets.push({ key: app.path, kind: 'path', path: app.path })
+    }
+  }
+  return targets
 }
 
 async function launchGroupById(groupId: string): Promise<LaunchResult> {
@@ -102,8 +117,13 @@ async function launchGroupById(groupId: string): Promise<LaunchResult> {
   if (!group) {
     return { success: 0, failed: 0, errors: [] }
   }
-  const paths = await resolveGroupPaths(group)
-  return launchGroupApps(paths)
+  const targets = await resolveGroupTargets(group)
+  const z = host()
+  return launchGroupApps(
+    targets,
+    (p) => z.shellOpenPath(p),
+    (label, payload) => z.redirect(label, payload),
+  )
 }
 
 const batchStart = {

@@ -52,6 +52,31 @@ export interface Settings {
    * 详见下面 `FootMode` 的说明。
    */
   foot: FootMode
+  /**
+   * 删除单条记录前先问一句。默认**问**（一直以来的行为，也是安全的那一档）。
+   *
+   * 关掉之后 Delete 直接删、不弹框 —— 弹框对键盘流是打断（要按两次才删掉一条）。
+   * 代价是**没有撤销**（宿主删了就删了，图片连磁盘文件都会一起 unlink，见 REFERENCE §26.1-A），
+   * 所以这一档是「我知道自己在按什么」的人用的，插件不替他做决定，摆出来让他挑。
+   *
+   * ⚠️ 只管「删单条」。**清空**不受这个开关影响 —— 它一次删几十上百条、还会连带
+   * unlink 一批图片，那个必须问。
+   */
+  confirmDelete: boolean
+  /**
+   * 行尾常驻显示**类型标签**（文本 / 链接 / 图像 / 文件）。
+   * 跟 `tailIndex` 是**多选**关系，两样可以同时开，也可以都不开（那就是行尾什么都没有）。
+   */
+  tailType: boolean
+  /**
+   * 行尾常驻显示**序号**（只给前 9 行），配 `⌘1`–`⌘9` 秒贴。
+   *
+   * 默认关：它是给练熟了快捷键的人用的。序号**必须**跟 `⌘N` 指向同一条 ——
+   * 所以它跟快捷键取的是同一份渲染列表，别另算。
+   */
+  tailIndex: boolean
+  /** 鼠标划过时，行尾浮现「收藏 / 删除」两枚按钮（鼠标唯一的操作入口） */
+  tailActs: boolean
 }
 
 /**
@@ -98,10 +123,25 @@ export const DEFAULT_SETTINGS: Settings = {
   // 默认跟随窗口：不画底，跟顶部那行零色差，深浅色也不用我们操心
   bg: 'auto',
   // 默认完整：键位提示是给新手的，先给上；嫌吵的人自己去调
-  foot: 'full'
+  foot: 'full',
+  // 默认问一句：一直以来的行为，也是出事代价最小的那一档
+  confirmDelete: true,
+  // 默认只留类型标签 —— 跟改这些项之前长得一样，老用户不该被打扰
+  tailType: true,
+  // 序号默认关：不按 ⌘N 的人只会觉得行尾多了一列没用的数字
+  tailIndex: false,
+  // 默认开：这是鼠标唯一的操作入口，关掉之后收藏/删除就只剩键盘了
+  tailActs: true
 }
 
-/** 只认识自己这几个键，多余的一律丢掉，缺的补默认值，不认识的值退回安全值 */
+/**
+ * 只认识自己这几个键，多余的一律丢掉，缺的补默认值，不认识的值退回安全值。
+ *
+ * ⚠️ 几个布尔项写的是 **`!== false`** 而不是 `=== true`：`tailType` / `tailActs` /
+ * `confirmDelete` 的默认值是 `true`，而**老版本存下来的文档里根本没有这几个键**
+ * （`undefined`）。写成 `=== true` 就等于给所有老用户悄悄关掉了删除确认和行尾按钮 ——
+ * 那是「加一个设置」变成了「改别人已有的行为」。只有默认 `false` 的项才写 `=== true`。
+ */
 export function normalizeSettings(raw: unknown): Settings {
   const src = (raw ?? {}) as Partial<Settings>
   return {
@@ -109,7 +149,11 @@ export function normalizeSettings(raw: unknown): Settings {
     accent: ACCENT_KEYS.includes(src.accent as never) ? (src.accent as AccentMode) : 'auto',
     mark: MARK_MODES.includes(src.mark as MarkMode) ? (src.mark as MarkMode) : 'border',
     bg: BG_KEYS.includes(src.bg as never) ? (src.bg as BgMode) : 'auto',
-    foot: FOOT_MODES.includes(src.foot as FootMode) ? (src.foot as FootMode) : 'full'
+    foot: FOOT_MODES.includes(src.foot as FootMode) ? (src.foot as FootMode) : 'full',
+    confirmDelete: src.confirmDelete !== false,
+    tailType: src.tailType !== false,
+    tailIndex: src.tailIndex === true,
+    tailActs: src.tailActs !== false
   }
 }
 

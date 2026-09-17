@@ -169,3 +169,211 @@ test('★ 确认框居中：位置由 .mask 的 flex 给，别再让 JS 算坐�
   assert.doesNotMatch(src, /placePopover|anchorAtPointer|confirmPos/, 'popover 那套定位又回来了？')
   assert.doesNotMatch(template, /:style="popStyle/, '模板里又在给确认框内联坐标了')
 })
+
+/*
+ * ★ 设置面板的**排布**（09-17 老大要求）：按控件类型分三段、**段内按行长从短到长**。
+ *
+ *   ① 色点段：底色（4 颗）→ 强调色（13 颗）
+ *   ② 选中段（药丸）：行尾（2 颗）→ 选中项（3 颗）→ 底栏（4 颗）
+ *   ③ 开关段：行尾按钮 → 显示详情 → 删除前确认
+ *
+ * 改之前是「按主题」混排的（行尾、行尾按钮、底栏、显示详情…），三种控件形状一格一格交替，
+ * 右边缘那列开关被药丸行打断。老大原话：「设置也要分类放一起才好看」。
+ *
+ * ⚠️ **方向是短→长**，我第一版做成了长→短，被老大当场纠回来：「为什么不是每个类都是从短到长呢，
+ *    你是从长到短……应该从短到长」。改这条断言时别再顺手翻回去。
+ *
+ * ⚠️ 这是**有意锁住的**：以后再调整排布，请连这条断言一起改 —— 不要顺手把它删掉，
+ *    否则"开关又被夹在两段药丸中间"这种回退没人拦得住。
+ */
+test('★ 设置面板：按控件类型分三段（段内短→长），开关段连着压在最下面', () => {
+  const start = template.indexOf('class="sheet-body"')
+  assert.ok(start > -1, 'App.vue 里找不到 .sheet-body')
+  const end = template.indexOf('<!-- 确认框：', start)
+  const panel = template.slice(start, end > start ? end : undefined)
+
+  // 1) 开关段不许被任何药丸组打断：第一颗开关之后不能再出现 `.grp`
+  const firstOpt = panel.indexOf('class="opt')
+  assert.ok(firstOpt > -1, '面板里找不到开关行（.opt）')
+  assert.doesNotMatch(
+    panel.slice(firstOpt),
+    /class="grp/,
+    '开关段被药丸组打断了 —— 同形状的控件要连着排，开关统一压在最下面'
+  )
+
+  // 2) 各组标题的先后（开关段没有标题，所以只到「底栏」）
+  const labels = [...panel.matchAll(/class="lbl">([^<]+)</g)].map((m) => m[1])
+  assert.deepEqual(
+    labels,
+    ['底色', '强调色', '行尾', '选中项', '底栏'],
+    '面板分组顺序变了（期望：色点段 底色/强调色 → 选中段 行尾/选中项/底栏，段内短→长）'
+  )
+
+  // 3) 开关段的三行及其先后（标签 4/4/5 字，也正好是短→长；越靠下越危险，删除前确认压尾）
+  const switches = [...panel.matchAll(/class="nm">([^<]+)</g)].map((m) => m[1])
+  assert.deepEqual(switches, ['行尾按钮', '显示详情', '删除前确认'])
+
+  // 4) 段间空隙标记 `.blk` 正好两处：第②③ 段的第一行各一次
+  assert.equal(
+    (panel.match(/class="(?:grp|opt) blk"/g) ?? []).length,
+    2,
+    '`.blk` 应该正好两处（选中段首行、开关段首行）—— 重排时记得把它跟着搬'
+  )
+})
+
+/*
+ * ★ 圆角只有三档：4 / 8 / 999（09-17 老大拍板）。
+ *
+ * 收之前散着 **4 / 5 / 6 / 7 / 8 / 10** 六个值 —— 每加一个小控件就顺手挑一个数，
+ * 同一屏里"行 6、行尾按钮 5、确认框按钮 7、确认框卡片 10"谁也说不清为什么不一样。
+ *
+ * 这里锁两件事：
+ *   1. 样式里**只允许** `var(--radius-sm|md|pill)` 和 `50%`（正圆：色点、开关圆钮，
+ *      那是尺寸决定的，不进阶梯）、`0`。再出现 5 / 6 / 7 / 10 就是回退。
+ *   2. 旧的 `--radius-row`（6px 那档）**不能复活** —— 它已经从 base.css 删掉了，
+ *      样式里但凡还留着一处引用，那个元素的圆角会静默变成 0（方角），不报错、不显眼。
+ */
+test('★ 圆角只有三档（4 / 8 / 999）：不该再有 5 / 6 / 7 / 10', () => {
+  const literals = [...css.matchAll(/border-radius:\s*([^;}]+)/g)].map((m) => m[1].trim())
+  assert.ok(literals.length > 5, '一条圆角都没抽到 —— 正则或样式表结构变了')
+  const stray = literals.filter((v) => !/^(var\(--radius-(sm|md|pill)\)|50%|0)$/.test(v))
+  assert.deepEqual(stray, [], `出现了三档之外的圆角：${stray.join(' / ')}`)
+  assert.ok(!css.includes('--radius-row'), '还引用着已删掉的 --radius-row（那处会静默变方角）')
+})
+
+test('★ base.css 的三档圆角变量齐全，且 --radius-row 没有复活', () => {
+  const base = readFileSync(fileURLToPath(new URL('../src/styles/base.css', import.meta.url)), 'utf8')
+  for (const name of ['--radius-sm', '--radius-md', '--radius-pill']) {
+    assert.match(base, new RegExp(`${name}:`), `base.css 里没有 ${name}`)
+  }
+  assert.ok(
+    !base.includes('--radius-row'),
+    '--radius-row 又回来了 —— 圆角已经并成三档，别开第四档'
+  )
+})
+
+/*
+ * ★ 行本身的 120ms 过渡（09-17 老大提的"低幅度缓动是高级感最便宜的一招"）。
+ *
+ * 核实过的现状：`.act` / 药丸 / `.clr` / 开关 / `.tag` / `.num` / 淡入底栏**本来就有** .12~.16s，
+ * 真正还是硬切的恰好是**最高频的那一处** —— 行的 hover 与三档选中态
+ * （鼠标扫过一屏几十行、按 ↑↓ 一行行挪，全在改 background / box-shadow / color）。
+ *
+ * 锁三样：transition 在、三个属性都盖到、时长是 120ms（别调大 —— 低幅度缓动拖长了就变"粘"）。
+ */
+test('★ .row 有 120ms 过渡（background / box-shadow / color 三样都要盖到）', () => {
+  // 行首锚定：不然会抽到 `.row.tall` / `.row:hover` 之类（它们不以 `.row {` 结尾，但也别冒险）
+  const rule = css.match(/^\.row\s*\{[^}]*\}/m)
+  assert.ok(rule, 'App.vue 里找不到 .row 规则')
+  const t = rule[0].match(/transition:\s*([^;}]+)/)
+  assert.ok(t, '.row 上没有 transition —— 悬停 / 选中又变回硬切了')
+  for (const prop of ['background', 'box-shadow', 'color']) {
+    assert.match(t[1], new RegExp(prop), `.row 的过渡没盖到 ${prop}`)
+  }
+  assert.match(t[1], /0\.12s/, '.row 的时长不是 120ms')
+})
+
+/*
+ * ★ 次文本灰拆成两档（09-17，老大提的）：**标签 38 / 内容 52**（深色 48 / 64）。
+ *
+ * 拆的理由：原来一个 42% 同时管「组标签」和「次要内容」——
+ * 设置面板的组名（底色 / 强调色）跟行尾图标、键帽一样重，层级是平的。
+ *
+ * 锁三件事：
+ *   1. 两套值都在，且**深浅不是同一组百分比**（深色底上要用更高的不透明度才看得见，
+ *      照搬浅色的 38/52 会让深色的标签比改之前还淡 —— 这是这条建议里唯一的坑）；
+ *   2. 面板的标签（`.lbl` / `.opt .nm`）走 `--tx-label`；
+ *   3. 行内的零件（`.act` 等）**仍然走 `--tx-2`** —— 它们是"内容"，别被顺手归进标签档
+ *      （归错了就是行尾按钮跟着一起变淡，鼠标唯一的入口更看不见了）。
+ */
+test('★ 灰阶两档：标签 38 / 内容 52（深色各是 48 / 64），深浅不许共用一组数', () => {
+  const base = readFileSync(fileURLToPath(new URL('../src/styles/base.css', import.meta.url)), 'utf8')
+  assert.match(base, /--tx-2:\s*rgba\(0, 0, 0, 0\.52\)/, '浅色的内容档不是 52%')
+  assert.match(base, /--tx-label:\s*rgba\(0, 0, 0, 0\.38\)/, '浅色的标签档不是 38%')
+  assert.match(base, /--tx-2:\s*rgba\(255, 255, 255, 0\.64\)/, '深色的内容档不是 64%')
+  assert.match(base, /--tx-label:\s*rgba\(255, 255, 255, 0\.48\)/, '深色的标签档不是 48%')
+})
+
+test('★ 面板标签走 --tx-label，行里零件的 --tx-2 不许被一起改掉', () => {
+  const lbl = css.match(/^\.lbl\s*\{[^}]*\}/m)
+  assert.ok(lbl, '找不到 .lbl')
+  assert.match(lbl[0], /color:\s*var\(--tx-label\)/, '组标签没走标签档')
+
+  const nm = css.match(/^\.opt \.nm\s*\{[^}]*\}/m)
+  assert.ok(nm, '找不到 .opt .nm')
+  assert.match(nm[0], /color:\s*var\(--tx-label\)/, '开关行的名字没走标签档')
+
+  // ⚠️ 行首锚定是必需的：`.root.mark-solid .row.on .act { … }` 那条复合选择器
+  // 也以 `.act {` 结尾，不锚 `^` 就会抽到它（它写的是反白色，不可能是 --tx-2）。
+  const act = css.match(/^\.act\s*\{[^}]*\}/m)
+  assert.ok(act, '找不到 .act')
+  assert.match(
+    act[0],
+    /color:\s*var\(--tx-2\)/,
+    '行尾 ☆ / 🗑 是"内容"，不该跟着标签一起退后（它是鼠标唯一的入口）'
+  )
+})
+
+/*
+ * ★ 行尾按钮：**鼠标划过 与「这行是当前行」表现必须完全一致**（09-17 晚老大真机报的）。
+ *
+ * 中间有一版只跟 `:hover` 走，理由是"键盘流里点不到按钮，却把类型标签盖掉了"。
+ * 真机一看是错的：同一行在两套输入下长得不一样，键盘选中的行右端空着一格，
+ * 看着像坏了 —— 老大原话「真实选中行却没有显示出来，这是bug」。
+ *
+ * 锁两件事（少一样就退回"选中行不出按钮"）：
+ *   1. 选中行要把按钮放出来，且跟 hover 走**同一条规则**（分叉过，别再分）；
+ *   2. 选中行的类型标签 / 序号要同步淡出 —— ⚠️ 这一格是 absolute 叠着的，
+ *      不让位就会跟按钮**叠字**。淡出那条还必须带 `.tail-acts`：
+ *      按钮一关，标签会在划过 / 选中时凭空消失、底下没东西顶上来。
+ */
+test('★ 行尾按钮：选中行跟 hover 一样出按钮，标签同步让位', () => {
+  const show = css.match(/\.row:hover \.acts,\s*\.row\.on \.acts\s*\{([^}]*)\}/)
+  assert.ok(show, '.row.on .acts 没了 —— 键盘选中的行又不显示按钮了')
+  assert.match(show[1], /opacity:\s*1/, '选中行没有把按钮放出来')
+
+  const fade = css.match(
+    /\.row:hover \.tail-acts \.tag,\s*\.row\.on \.tail-acts \.tag,\s*\.row:hover \.tail-acts \.num,\s*\.row\.on \.tail-acts \.num\s*\{([^}]*)\}/
+  )
+  assert.ok(fade, '选中行的标签 / 序号没写让位 —— 会跟按钮叠在同一格上')
+  assert.match(fade[1], /opacity:\s*0/, '让位那条不是 opacity: 0')
+})
+
+/*
+ * ★ 「底色」档多了一根左竖条（09-17 晚方案 B：**并进底色档，不新开档位**）。
+ *
+ * 渊源别记反：09-14 做过又撤过（老大真机原话「为什么选中中会有个竖线，我感觉不好看」），
+ * 09-17 他拿参考图重新提。定的做法是"并进「底色」档"——单为"一根线"多开一档，
+ * 等于把同一个选择拆成两个，让人多纠结一次。
+ *
+ * 锁四件事：
+ *   1. 竖条挂在 `.root.mark-tint` 下（**只有这一档有房顶**）；
+ *   2. 写法是**常驻 + 切 opacity**，不是直接写 `.on::before` ——
+ *      后者会让竖条凭空出现，跟行底色那 120ms 的淡入脱拍；
+ *   3. 时长跟 `.row` 一样是 0.12s（两处别各走各的）；
+ *   4. `.row` 上留着 `position: relative` —— 删了竖条会跑到面板最左边。
+ */
+test('★ 底色档的左竖条：只有 tint 档有、靠 opacity 跟着 120ms 走', () => {
+  const bar = css.match(/\.root\.mark-tint \.row::before\s*\{([^}]*)\}/)
+  assert.ok(bar, '底色档的左竖条没了')
+  assert.match(bar[1], /position:\s*absolute/, '竖条不是绝对定位 —— 会占掉文字的位置')
+  assert.match(bar[1], /opacity:\s*0/, '竖条不是"常驻 + 切 opacity"的写法（切换时会闪）')
+  assert.match(bar[1], /0\.12s/, '竖条的时长跟 .row 的 120ms 不一致')
+
+  const on = css.match(/\.root\.mark-tint \.row\.on::before\s*\{([^}]*)\}/)
+  assert.ok(on, '选中行没有把竖条点亮')
+  assert.match(on[1], /opacity:\s*1/, '选中行的竖条不是 opacity: 1')
+
+  // 只有 tint 档有竖条：另两档本来就有装饰（描框 / 铺满），再加一根就是三层
+  assert.doesNotMatch(css, /\.root\.mark-(border|solid) \.row::before/, '竖条漂到别的档位上了')
+
+  // 定位基准
+  const row = css.match(/^\.row\s*\{[^}]*\}/m)
+  assert.ok(row, '找不到 .row 规则')
+  assert.match(
+    row[0],
+    /position:\s*relative/,
+    '.row 丢了 position: relative —— 竖条会跑到面板最左边去'
+  )
+})
+

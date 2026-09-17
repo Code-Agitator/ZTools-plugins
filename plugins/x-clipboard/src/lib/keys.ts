@@ -13,6 +13,7 @@
  * 因为对插件来说它们本来就是同一个动作。但**展示**必须分平台，
  * Windows 的键盘上根本没有 ⌘ 键。界面上统一走 `platform.ts` 的 `modKey()`，
  * 下面 `label` 里那个 ⌘ 只是「修饰键」的占位写法。
+ * ⇒ 所以 `⌘1`–`⌘9` 在 Windows 上就是 `Ctrl+1`–`Ctrl+9`，**代码里不用写平台分支**。
  *
  * 切分类为什么用 Tab / ⇧Tab 而不是 ⌘1~5：宿主那个搜索框握着焦点时，渲染层只把
  * `←→↑↓EnterTab` 六个键投给插件，`⌘1~5` 根本进不来。而 Tab 天然没有平台差异。
@@ -20,12 +21,25 @@
  *  见 App.vue 的 takeKeyboard()；Esc 抢跑靠的是捕获监听器。）
  */
 
+/**
+ * `⌘1`–`⌘9`：直接粘贴第 N 行。
+ *
+ * ⚠️ **跟 ⌘K 同一个前提：焦点得先在插件里**（先按一次 ↑↓、或者用鼠标点过列表）。
+ * 数字键**不在**宿主那六个键的白名单里，所以「打开插件就直接按 ⌘1」是收不到的 ——
+ * 这不是能靠改插件绕开的事（详见 REFERENCE §26.1-D）。
+ *
+ * ⚠️ 序号**必须**取自渲染列表本身（`v-for` 的下标），不能另算一份 ——
+ * 两处一旦不一致，按 ⌘3 粘到的就不是眼睛看到的第 3 条。
+ */
+export type PasteAction = `paste${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
+
 export type KeyAction =
   | 'up'
   | 'down'
   | 'enter'
   | 'escape'
   | 'remove'
+  | 'backspaceSearch'
   | 'focusSearch'
   | 'copy'
   | 'favorite'
@@ -33,9 +47,26 @@ export type KeyAction =
   | 'cycleType'
   | 'cycleTypeBack'
   | 'openSettings'
+  | PasteAction
 
 function withMod(key: string): KeyAction | null {
+  /*
+   * ⌘1–⌘9 秒贴。**先判掉** —— 它是纯模式匹配，跟下面那堆语义键不是一类；
+   * 塞进 switch 就只能靠 default 兜，而 default 摆在任何位置都合法、
+   * 摆在开头还会从那儿往下穿透，是个容易看漏的坑。
+   */
+  if (/^[1-9]$/.test(key)) return `paste${key}` as PasteAction
+
   switch (key) {
+    /*
+     * ⌘⌫ / Ctrl+⌫ = 删除当前项（macOS 的惯例）。
+     *
+     * 裸 Backspace 已经改成「退格」了（见下面 `resolveKey`），删数据只剩 `Delete` 一个键 ——
+     * 这条是给"手本来就停在 Backspace 上"的人留的路子：**按住修饰键才是删**。
+     * 也顺便解释清楚为什么它不在下面那个 switch 里：修饰键路径全都先走 `withMod`。
+     */
+    case 'backspace':
+      return 'remove'
     case 'f':
       return 'focusSearch'
     case 'c':
@@ -85,6 +116,17 @@ function withMod(key: string): KeyAction | null {
   }
 }
 
+/**
+ * `paste3` → `2`，其余 → `null`。
+ *
+ * 让调用方拿得到「第几个」而不必自己去拆字符串；也保证「认哪几个键」这件事
+ * 仍然只有 `withMod` 一处说话。
+ */
+export function pasteSlot(action: KeyAction | null | undefined): number | null {
+  const m = /^paste([1-9])$/.exec(action ?? '')
+  return m ? Number(m[1]) - 1 : null
+}
+
 export function resolveKey(e: KeyboardEvent): KeyAction | null {
   if (e.metaKey || e.ctrlKey) return withMod(e.key.toLowerCase())
 
@@ -100,7 +142,21 @@ export function resolveKey(e: KeyboardEvent): KeyAction | null {
     case 'Tab':
       // Tab 是极少数「搜索框有焦点时宿主也会转发给插件」的键，靠它才切得动分类
       return e.shiftKey ? 'cycleTypeBack' : 'cycleType'
+    /*
+     * ★ Backspace **不是删除键**（09-17 改）。它只退搜索框。
+     *
+     * 删除可以在设置里关掉确认框之后，这一键按下去就是真的没了 ——
+     * 宿主是**硬删**，图像还会连磁盘文件一起 `unlink`，**没有撤销**。
+     * 而「想删搜索词里的一个字」是高频动作，两者共用一个键迟早出事。
+     * 真正删除只剩：`Delete` 键，或者修饰键路径里的 ⌘⌫ / Ctrl+⌫。
+     *
+     * 顺带说明为什么这个改动**不会**让搜索框里的退格失灵：焦点在搜索框时，
+     * 宿主渲染层根本不转发 Backspace（只转 ←→↑↓EnterTab），那一路是框自己退格。
+     * 这条分支只在焦点已经搬进插件（按过 ↑↓）时才会走到 ——
+     * 我们要做的正是"替他把框里那个字退掉"（见 App.vue 的 backspaceSearch）。
+     */
     case 'Backspace':
+      return 'backspaceSearch'
     case 'Delete':
       return 'remove'
     case '/':

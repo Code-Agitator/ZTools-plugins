@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { upsertDoc } from '../src/lib/clipboard.ts'
-import { loadSettings, saveSettings } from '../src/lib/settings.ts'
+import { loadSettings, saveSettings, type Settings } from '../src/lib/settings.ts'
 import { addFavorite, loadFavorites } from '../src/lib/favorites.ts'
 
 /* ---------------------------------------------------------------- 假宿主 */
@@ -92,25 +92,36 @@ test('upsertDoc 连写两次：第二次也得真的写进去', async () => {
 test('设置存两次：第二次要成功，且读回来是后一次的值（★ 老大报的那个 bug）', async () => {
   resetHost()
 
-  assert.equal(
-    await saveSettings({ peek: false, accent: 'teal', mark: 'border', bg: 'white', foot: 'full' }),
-    true
-  )
-  assert.equal(
-    await saveSettings({ peek: true, accent: 'purple', mark: 'solid', bg: 'warm', foot: 'none' }),
-    true
-  )
-
-  assert.equal(conflictCount, 0)
-  const back = await loadSettings()
-  // 每个字段都要真的绕一圈回来 —— 少断言一个，将来加字段时这条测试就悄悄失去意义了
-  assert.deepEqual(back, {
+  const first: Settings = {
+    peek: false,
+    accent: 'teal',
+    mark: 'border',
+    bg: 'white',
+    foot: 'full',
+    confirmDelete: true,
+    tailType: true,
+    tailIndex: false,
+    tailActs: true
+  }
+  const second: Settings = {
     peek: true,
     accent: 'purple',
     mark: 'solid',
     bg: 'warm',
-    foot: 'none'
-  })
+    foot: 'none',
+    confirmDelete: false,
+    tailType: false,
+    tailIndex: true,
+    tailActs: false
+  }
+
+  assert.equal(await saveSettings(first), true)
+  assert.equal(await saveSettings(second), true)
+
+  assert.equal(conflictCount, 0)
+  const back = await loadSettings()
+  // 每个字段都要真的绕一圈回来 —— 少断言一个，将来加字段时这条测试就悄悄失去意义了
+  assert.deepEqual(back, second)
 })
 
 test('连点两次（不 await 第一次）也不能互相撞掉 —— 同一个 id 的写入是串行的', async () => {

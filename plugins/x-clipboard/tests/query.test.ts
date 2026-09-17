@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  backspaceQuery,
   CAT_PREFIX,
   catOf,
   cycleCat,
@@ -185,3 +186,48 @@ test('行尾标签：图片和文件不受影响', () => {
   assert.equal(labelOf({ type: 'image' }), '图像')
   assert.equal(labelOf({ type: 'file', content: 'https://example.com' }), '文件')
 })
+
+/*
+ * ★ Backspace = 退格，不是删除（09-17 改）。
+ *
+ * 这条链着一次真实的丢数据：删除能在设置里关掉确认框之后，
+ * 「想删搜索词里的一个字」按下去就是整条记录被硬删（图像连磁盘文件一起 unlink），没有撤销。
+ * 所以退格键只退搜索框 —— 退哪一层、退完还剩什么，全在这里锁住。
+ */
+test('退格：有关键词就退一个字符，分类前缀原样带着', () => {
+  assert.equal(backspaceQuery('abc'), 'ab')
+  assert.equal(backspaceQuery('文本:abc'), '文本:ab')
+  assert.equal(backspaceQuery('图像:截图'), '图像:截')
+  assert.equal(backspaceQuery('收藏:报'), '收藏:')
+})
+
+test('退格：只剩分类前缀就把这一层整个退掉，不留「文本」这种半截前缀', () => {
+  assert.equal(backspaceQuery('文本:'), '')
+  assert.equal(backspaceQuery('图像:'), '')
+  assert.equal(backspaceQuery('收藏:'), '')
+  assert.equal(backspaceQuery('全部:'), '')
+})
+
+test('退格：空框什么都不做（返回 null，调用方直接 return，不写框也不动选中）', () => {
+  assert.equal(backspaceQuery(''), null)
+})
+
+test('退格：只剩空白也清掉，不会卡在一串空格上', () => {
+  assert.equal(backspaceQuery('   '), '')
+})
+
+test('退格退出来的一定还是个合法查询', () => {
+  // 「文本:」退成空串 = 回到「全部」，而不是把「文本」两个字当成要搜的词
+  assert.equal(catOf(backspaceQuery('文本:') as string), 'all')
+  assert.equal(parseQuery(backspaceQuery('文本:') as string).text, '')
+  // 逐字退一格之后，分类还在
+  assert.equal(catOf(backspaceQuery('文本:a') as string), 'text')
+  assert.equal(parseQuery(backspaceQuery('文本:ab') as string).text, 'a')
+})
+
+/*
+ * ⚠️ 这里原来有三条 `isScopeReset` 的测试（判"退成空才算范围回全量"），
+ * 09-17 第二轮**已随函数一起删除** —— 老大真机看过之后把口径收紧成
+ * 「搜索框内容一变就落回第一条」，无条件 ⇒ 不需要判据。
+ * 现在的规矩（无条件落回第一条 + 滚回顶上）锁在 `tests/selection.test.ts` 里。
+ */

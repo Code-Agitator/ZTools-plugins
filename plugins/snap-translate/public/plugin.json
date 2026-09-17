@@ -3,7 +3,7 @@
   "name": "snap-translate",
   "title": "截图翻译",
   "description": "截图 OCR 翻译",
-  "author": "",
+  "author": "Taitres",
   "version": "0.8.0",
   "main": "index.html",
   "preload": "preload/services.js",

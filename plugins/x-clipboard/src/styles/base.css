@@ -1,0 +1,125 @@
+/*
+ * x-clipboard 基础样式
+ *
+ * 设计取向：极简无装饰。
+ * 不加卡片、不加边框、不加自己的标题栏 —— 界面里只有「内容 + 一个极淡的清空入口」。
+ * 分层只靠三样东西：留白、字重、极浅的分隔线。
+ *
+ * 强调色跟着 ZTools 的主题色走：宿主在插件文档的 :root 上注入
+ * --plugin-primary-color（!important），插件不自己定义品牌色。
+ * 下面这三个变量由 `src/lib/theme.ts` 在挂载前算好写进 documentElement，
+ * 这里的值是「JS 还没跑起来」时的兜底，同时也是不用 JS 时的默认：
+ *   --accent-soft    强调色 13% 的淡底（当前行）
+ *   --row-on-tx      铺在强调色上的字色（深色主题的强调色偏亮，白字会糊）
+ *   --on-accent-rgb  上面那个字色的 rgb，用来做强调色上的半透明底
+ */
+
+:root {
+  /* 面板底色。JS 跑起来之后会被设置覆盖：默认「跟随窗口」= transparent。
+     这里的值是 JS 还没跑时的兜底，也是不用 JS 时的默认。 */
+  --surface: #ffffff;
+  /* 浮层底色（详情 / 设置 / 确认框 / 淡入底栏）。**恒为实底** ——
+     这四层浮在内容之上，必须靠实底 + 描边 + 投影立住层次。
+
+     ⚠️ 这里是**回落值**：面板选了实底预设（白 / 灰 / 暖 / 冷）时，`theme.ts` 会用面板那个色号
+       覆盖掉（浮层跟随底色，这是默认行为）；**只有面板「默认」（不画底）时才落到这对中性实底上** ——
+       那一档面板是透明的、没有颜色可跟，浮层跟着透明会**重影**（试过，老大否掉）。
+       见 surface.ts 的 resolveFloatBg。 */
+  --surface-float: #ffffff;
+
+  --tx-1: #1c1c1e; /* 主文本 */
+  --tx-2: rgba(0, 0, 0, 0.42); /* 次文本 */
+  --tx-3: rgba(0, 0, 0, 0.26); /* 三级文本 */
+
+  --line: rgba(0, 0, 0, 0.065);
+  /* 行 hover。用半透明而不是实色：面板可能是透明的（露出窗口毛玻璃），
+     实色 hover 铺在毛玻璃上像贴了一块补丁；半透明则实底、毛玻璃上都成立。 */
+  --row-hover: rgba(0, 0, 0, 0.05);
+
+  --accent: var(--plugin-primary-color, #1fa84e);
+  --accent-soft: rgba(31, 168, 78, 0.13); /* 当前行的底 */
+  --row-on-tx: #ffffff;
+  --on-accent-rgb: 255, 255, 255;
+
+  /* 破坏性操作的红（删除 / 清空 / 确认框那颗「确定」）。
+     原先在 App.vue 里硬写了四处，现在底栏那两颗按钮也要用它（还要它的淡底版），
+     顺手收成变量 —— 免得改一处漏三处。 */
+  --danger: #ff453a;
+  --danger-soft: rgba(255, 69, 58, 0.13); /* 上面那个 13% 的淡底，配「淡底」档的选中项 */
+
+  --row-h: 36px; /* 纯文本行 */
+  --row-h-tall: 42px; /* 带缩略图 / 文件图标的行 */
+  --pad-x: 9px;
+  --radius-row: 6px;
+}
+
+/* 深浅色只认 data-theme —— 由 lib/theme.ts 按 ZTools 自己的深浅设置写上去。
+   用 prefers-color-scheme 是错的：宿主是深色、系统是浅色时插件会白得刺眼。 */
+:root[data-theme='dark'] {
+  --surface: #1e1f22;
+  --surface-float: #1e1f22;
+
+  --tx-1: #e8e8ea;
+  --tx-2: rgba(255, 255, 255, 0.55);
+  --tx-3: rgba(255, 255, 255, 0.32);
+
+  --line: rgba(255, 255, 255, 0.08);
+  --row-hover: rgba(255, 255, 255, 0.07);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  color: var(--tx-1);
+  font: 14px/1.35 -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC',
+    'Helvetica Neue', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+button {
+  font-family: inherit;
+  user-select: none;
+}
+
+/*
+ * 按钮上的焦点环一律掐掉。
+ *
+ * 本插件的 `Tab` 被「切分类」占用了，**没有任何键盘路径能把焦点挪到按钮上** ——
+ * 界面里所有按钮都只能鼠标点。于是 UA 那圈 focus 环只有一个来源：
+ * **鼠标点完之后焦点留在按钮上没走**（Chromium 拿系统强调色画那圈环，
+ * 这台机器上是琥珀色）。表现就是老大 09-16 报的：
+ * 「点设置 → 弹出面板 → 按 Esc 关掉，设置两个字上还围着一圈橙线」。
+ *
+ * ⚠️ 别把这圈环当成"键盘可操作"的证据再加回来：真要键盘操按钮，
+ *    得连 `Tab` 的语义一起重新设计（现在 Tab 是切分类）。
+ */
+button:focus,
+button:focus-visible {
+  outline: none;
+}
+
+/* 滚动条压到最淡，不打断内容 */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(127, 127, 127, 0.28);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(127, 127, 127, 0.45);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

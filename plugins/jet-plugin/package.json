@@ -1,6 +1,6 @@
 {
   "name": "jet-plugin",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "扫描本机已安装的 JetBrains IDE，聚合各 IDE 最近打开的项目，支持模糊搜索与一键启动",
   "author": "zl",
   "type": "commonjs",

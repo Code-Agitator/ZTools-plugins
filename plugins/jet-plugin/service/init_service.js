@@ -1,6 +1,13 @@
 const fs = require("fs");
 const path = require("path");
 const { getInstalledApps } = require("../utils/getApps/index");
+const {
+  deriveInstallDir,
+  findLaunchExecutable,
+  matchDataDirectoryName,
+  normalizeWindowsPath,
+  resolveProductLaunchCandidates
+} = require("../utils/getApps/win");
 const { XMLParser } = require("fast-xml-parser");
 
 // 需要识别的 IDE（模块级常量，避免每次初始化重复构建）
@@ -37,7 +44,8 @@ const XML_PARSER = new XMLParser({
 // IDE 扫描结果缓存（ZTools dbStorage）：避免每次进入插件都全量扫描
 // - 缓存超过 TTL：同步全量扫描
 // - 缓存未过期但已较旧：先用缓存渲染，再后台刷新供下次使用
-const CHANNELS_CACHE_KEY = "channels.v1";
+// v2：通道信息新增 Windows 安装目录/启动命令来源，且需让旧版本写入的空结果立即失效
+const CHANNELS_CACHE_KEY = "channels.v2";
 const CHANNELS_CACHE_TTL = 5 * 60 * 1000;
 const CHANNELS_BACKGROUND_REFRESH_AFTER = 30 * 1000;
 
@@ -95,15 +103,21 @@ class InitService {
  */
 async function scanChannels() {
   const channels = {};
+  // Windows 的 appIdentifier 是注册表子键名，MSI 注册项就是 GUID（{...}），不能按占位符过滤
+  const requireRealIdentifier = !window.ztools.isWindows();
   // 按名称只取目标 IDE（mac 端在读取 Info.plist / mdls 之前完成过滤，避免全量扫描）
   const appList = (
     await getInstalledApps((appName) => TARGET_APP_REGEX.test(appName || ""))
-  ).filter(
-    (app) =>
-      app?.appName?.trim() && // 有非空名字
-      app?.appIdentifier && // 有 identifier
-      !app.appIdentifier.startsWith("{") // 不是占位符
-  );
+  ).filter((app) => {
+    if (!app?.appName?.trim()) {
+      // 没有名字的条目无法展示，也无法据此定位安装目录
+      return false;
+    }
+    if (!requireRealIdentifier) {
+      return true;
+    }
+    return Boolean(app?.appIdentifier) && !app.appIdentifier.startsWith("{"); // 不是占位符
+  });
   // 构建应用信息
   for (let targetApp of appList) {
     const channelInfo = buildChannelInfo(targetApp);
@@ -181,68 +195,178 @@ function getDbStorage() {
 }
 
 /**
- * 构建单个 IDE 的通道信息（读取 product-info.json）
+ * 构建单个 IDE 的通道信息（按平台分别定位安装目录 / 配置目录名 / 启动命令）
  * @param targetApp 应用数据
- * @returns 通道信息；缺少 product-info.json 或解析失败时返回 null
+ * @returns 通道信息；无法定位时返回 null（macOS 缺少 product-info.json，Windows 拿不到安装目录与启动命令）
  */
 function buildChannelInfo(targetApp) {
   try {
-    let appName = "";
-    let installLocation = "";
-    let appInfoFilePath = "";
-    let dataDirectoryName = "";
-    let launchCommand = "";
-    let logo_path = "";
     if (window.ztools.isWindows()) {
-      // windows
-      appName = targetApp.appName;
-      installLocation = targetApp.InstallLocation;
-      appInfoFilePath = installLocation + "/product-info.json";
-      if (!fs.existsSync(appInfoFilePath)) {
-        return null;
-      }
-      let appInfoFileData = fs.readFileSync(appInfoFilePath);
-      appInfoFileData = JSON.parse(appInfoFileData);
-      dataDirectoryName = appInfoFileData.dataDirectoryName;
-      // DisplayIcon 形如 "C:\...\idea64.exe,0"，去掉末尾的图标索引后才可作为可执行文件
-      launchCommand = String(targetApp.DisplayIcon || "").replace(/,\d+$/, "");
-      logo_path = window.ztools.getFileIcon(launchCommand) || "";
-    } else if (window.ztools.isMacOS()) {
-      // mac
-      appName = targetApp.appName;
-      installLocation = targetApp.app_dir + "/" + appName;
-      appInfoFilePath =
-        installLocation + "/Contents/Resources/product-info.json";
-      if (!fs.existsSync(appInfoFilePath)) {
-        return null;
-      }
-      let appInfoFileData = fs.readFileSync(appInfoFilePath);
-      appInfoFileData = JSON.parse(appInfoFileData);
-      dataDirectoryName = appInfoFileData.dataDirectoryName;
-      launchCommand =
-        installLocation +
-        "/Contents/MacOS/" +
-        appInfoFileData.launch[0].launcherPath.replace("../MacOS/", "");
-      logo_path = window.ztools.getFileIcon(installLocation) || "";
+      return buildWindowsChannelInfo(targetApp);
     }
-
-    return {
-      displayName: appName,
-      installLocation: installLocation,
-      dataDirectoryName: dataDirectoryName,
-      launchCommand: launchCommand,
-      logo_path: logo_path,
-      appVersion: targetApp.appVersion || "",
-      appInstallDate: targetApp.appInstallDate || "",
-      appSource: targetApp.appSource || "",
-      appLastUsedDate: targetApp.appLastUsedDate || "",
-      appLastUsedTimestamp: targetApp.appLastUsedTimestamp || 0,
-      appUseCount: targetApp.appUseCount || 0
-    };
+    if (window.ztools.isMacOS()) {
+      return buildMacChannelInfo(targetApp);
+    }
+    return null;
   } catch (error) {
     // 单个应用解析失败不影响其它应用
     console.error("init app failed:", targetApp.appName, error.message);
     return null;
+  }
+}
+
+/**
+ * macOS：安装目录即 .app 路径，配置目录名与启动命令来自 Contents/Resources/product-info.json
+ * @param targetApp 应用数据
+ * @returns 通道信息；缺少 product-info.json 或解析失败时返回 null
+ */
+function buildMacChannelInfo(targetApp) {
+  const appName = targetApp.appName;
+  const installLocation = targetApp.app_dir + "/" + appName;
+  const appInfoFilePath =
+    installLocation + "/Contents/Resources/product-info.json";
+  if (!fs.existsSync(appInfoFilePath)) {
+    return null;
+  }
+  let appInfoFileData = fs.readFileSync(appInfoFilePath);
+  appInfoFileData = JSON.parse(appInfoFileData);
+  return buildChannelResult(targetApp, {
+    displayName: appName,
+    installLocation: installLocation,
+    dataDirectoryName: appInfoFileData.dataDirectoryName,
+    launchCommand:
+      installLocation +
+      "/Contents/MacOS/" +
+      appInfoFileData.launch[0].launcherPath.replace("../MacOS/", ""),
+    logo_path: window.ztools.getFileIcon(installLocation) || ""
+  });
+}
+
+/**
+ * Windows：安装目录与启动命令来自「JetBrains 标准安装目录扫描 + 注册表」，
+ * 逐级兜底（不再因为读不到 product-info.json 就丢弃整个 IDE）
+ * @param targetApp 应用数据
+ * @returns 通道信息；安装目录与启动命令都拿不到时返回 null
+ */
+function buildWindowsChannelInfo(targetApp) {
+  const appName = targetApp.appName || "";
+  const installDirCandidates = collectInstallDirCandidates(targetApp);
+  // ① product-info.json：多候选安装目录依次探测，取第一个可读的
+  let installLocation = "";
+  let productInfo = null;
+  for (const installDir of installDirCandidates) {
+    const productInfoPath = path.join(installDir, "product-info.json");
+    if (!fs.existsSync(productInfoPath)) {
+      continue;
+    }
+    try {
+      productInfo = JSON.parse(fs.readFileSync(productInfoPath, "utf8"));
+      installLocation = installDir;
+      break;
+    } catch (error) {
+      // 单个候选解析失败时继续尝试下一个候选
+      console.error("read product-info failed:", productInfoPath, error.message);
+    }
+  }
+  if (!installLocation) {
+    installLocation = installDirCandidates[0] || "";
+  }
+  // ② 启动命令：product-info.json 的 Windows 启动项 → 注册表 DisplayIcon → 安装目录 bin\*.exe
+  const launchCandidates = []
+    .concat(resolveProductLaunchCandidates(installLocation, productInfo))
+    .concat(targetApp.launchCandidates || [])
+    .concat([targetApp.DisplayIcon || ""]);
+  const launchCommand =
+    findLaunchExecutable(launchCandidates, installDirCandidates) ||
+    normalizeWindowsPath(launchCandidates.find((candidate) => candidate) || "");
+  // ③ 配置目录名：product-info.json → 目录扫描结果 → 与 %APPDATA%\JetBrains 下的实际目录匹配
+  let dataDirectoryName =
+    (productInfo && productInfo.dataDirectoryName) ||
+    targetApp.dataDirectoryName ||
+    "";
+  if (!dataDirectoryName) {
+    dataDirectoryName = matchDataDirectoryName(
+      appName,
+      productInfo,
+      getJetBrainsConfigRoot()
+    );
+  }
+  if (!installLocation && !launchCommand) {
+    console.error("[win] drop IDE:", appName, "(no install dir / launch command)");
+    return null;
+  }
+  return buildChannelResult(targetApp, {
+    displayName: appName,
+    installLocation: installLocation,
+    dataDirectoryName: dataDirectoryName,
+    launchCommand: launchCommand,
+    // Windows 下安装目录是普通目录，getFileIcon 只会返回系统默认文件夹图标，
+    // 必须优先取启动器 exe 的图标（exe 图标即 IDE 图标）
+    logo_path: window.ztools.getFileIcon(launchCommand || installLocation) || ""
+  });
+}
+
+/**
+ * 汇总通道信息（各平台公共字段）
+ * @param targetApp 应用数据
+ * @param base 平台相关的定位结果
+ * @returns 通道信息
+ */
+function buildChannelResult(targetApp, base) {
+  return {
+    displayName: base.displayName,
+    installLocation: base.installLocation,
+    dataDirectoryName: base.dataDirectoryName || "",
+    launchCommand: base.launchCommand || "",
+    logo_path: base.logo_path || "",
+    appVersion: targetApp.appVersion || "",
+    appInstallDate: targetApp.appInstallDate || "",
+    appSource: targetApp.appSource || "",
+    appLastUsedDate: targetApp.appLastUsedDate || "",
+    appLastUsedTimestamp: targetApp.appLastUsedTimestamp || 0,
+    appUseCount: targetApp.appUseCount || 0
+  };
+}
+
+/**
+ * 收集 Windows 安装目录候选（去重保序：目录扫描 / 注册表 InstallLocation / 反推结果）
+ * @param targetApp 应用数据
+ * @returns 安装目录候选数组
+ */
+function collectInstallDirCandidates(targetApp) {
+  const candidates = [];
+  const pushCandidate = (value) => {
+    const text = normalizeWindowsPath(value);
+    if (!text) {
+      return;
+    }
+    if (
+      candidates.some((existed) => existed.toLowerCase() === text.toLowerCase())
+    ) {
+      return;
+    }
+    candidates.push(text);
+  };
+  for (const installDir of targetApp.installDirCandidates || []) {
+    pushCandidate(installDir);
+  }
+  pushCandidate(targetApp.installDir);
+  pushCandidate(targetApp.InstallLocation);
+  // 兼容旧缓存：可能只存了注册表原值，这里再从 DisplayIcon / UninstallString 反推
+  pushCandidate(deriveInstallDir(targetApp.DisplayIcon));
+  pushCandidate(deriveInstallDir(targetApp.UninstallString));
+  return candidates;
+}
+
+/**
+ * JetBrains 配置根目录（Windows 下即 %APPDATA%\JetBrains）
+ * @returns 目录路径；宿主不支持时返回 ""
+ */
+function getJetBrainsConfigRoot() {
+  try {
+    return path.join(window.ztools.getPath("appData"), "JetBrains");
+  } catch (error) {
+    return "";
   }
 }
 
@@ -255,6 +379,10 @@ function buildChannelInfo(targetApp) {
 function readRecentProjects(displayName, channel) {
   const recentProjectList = [];
   try {
+    // 没有配置目录名时无法定位文件（Windows 上可能推导失败），直接返回空列表
+    if (!channel || !channel.dataDirectoryName) {
+      return recentProjectList;
+    }
     const recentProjectsFile =
       window.ztools.getPath("appData") +
       "/JetBrains/" +

@@ -32,6 +32,44 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function human(n) {
+  const u = [['GB', 1073741824], ['MB', 1048576], ['KB', 1024]];
+  for (const [name, div] of u) if (n >= div) return (n / div).toFixed(2) + ' ' + name;
+  return n + ' B';
+}
+
+function formatDuration(sec) {
+  if (sec == null || isNaN(sec)) return '';
+  sec = Math.round(sec);
+  if (sec <= 0) return '即将完成';
+  if (sec < 60) return `${sec}秒`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}小时${m}分` + (s > 0 ? `${s}秒` : '');
+}
+
+function formatElapsed(sec) {
+  if (sec == null || isNaN(sec)) return '';
+  sec = Math.round(sec);
+  if (sec <= 0) return '1秒内';
+  if (sec < 60) return `${sec}秒`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s > 0 ? `${m}分${s}秒` : `${m}分钟`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}小时${m}分` + (s > 0 ? `${s}秒` : '');
+}
+
 function cleanLock(profileDir) {
   if (process.platform === 'win32') {
     const ps =
@@ -205,11 +243,30 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
   emit({ t: 'log', m: `使用浏览器：${browser.name}（${showBrowser ? '显示窗口' : '后台静默运行'}）` });
   emit({ t: 'log', m: `正在准备上传 ${files.length} 个文件…` });
 
+  let totalBytes = 0;
+  for (const f of files) {
+    try {
+      const s = fs.statSync(f);
+      if (s.isFile()) totalBytes += s.size;
+    } catch (e) {}
+  }
+
+  // 针对大文件（最高 5GB）动态计算合理超时：基准保底 6 小时（21600秒），慢速网络也能从容传完
+  const maxTimeoutS = Math.max(21600, Math.ceil(totalBytes / (50 * 1024)));
+
   const args = [
     '--no-proxy-server',
     '--disable-blink-features=AutomationControlled',
     '--no-first-run',
-    '--no-default-browser-check'
+    '--no-default-browser-check',
+    // 关键防休眠与防后台降频参数：防止窗口最小化、被遮挡或长时间传输时被 Chromium 冻结/挂起
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-features=CalculateNativeWinOcclusion',
+    '--disable-hang-monitor',
+    '--disable-ipc-flooding-protection',
+    '--js-flags=--max-old-space-size=4096'
   ];
 
   if (showBrowser) {
@@ -268,13 +325,34 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
 
     // 3) 点击 SEND 按钮并等待上传
     const startedAt = Date.now();
+    let uploadStartedAt = 0;
     let sentClicks = 0;
     let lastClick = 0;
     let lastProgress = -1;
     let seenUploading = false;
+    let lastProgressTime = Date.now();
+    let lastProgressPct = -1;
+    let consecutiveErrors = 0;
+    const STALL_TIMEOUT_MS = 15 * 60 * 1000; // 连续 15 分钟进度完全不动才判定为网络停滞
 
-    while (Date.now() - startedAt < timeoutS * 1000) {
+    while (true) {
       const now = Date.now();
+
+      // 检查浏览器是否被外部手动关闭或崩溃
+      if (page.isClosed() || (ctx && !ctx.pages().length)) {
+        throw new Error('浏览器窗口已被关闭，上传中断');
+      }
+
+      // 检查总时长保护上限（6小时）
+      if (now - startedAt > maxTimeoutS * 1000) {
+        throw new Error(`已达到单次任务保护时长上限（${Math.round(maxTimeoutS / 3600)}小时）`);
+      }
+
+      // 检查上传网络停滞（仅在已经进入上传阶段后生效）
+      if (seenUploading && (now - lastProgressTime > STALL_TIMEOUT_MS)) {
+        throw new Error(`上传连接已停滞超过 15 分钟无响应（进度卡在 ${lastProgressPct}%），请检查网络后重试`);
+      }
+
       const txt =
         (await page
           .evaluate(() => {
@@ -285,7 +363,9 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
 
       const link = extractLink(txt);
       if (link) {
-        emit({ t: 'done', link });
+        const totalDuration = Math.round((Date.now() - (uploadStartedAt || startedAt)) / 1000);
+        const durStr = formatElapsed(totalDuration);
+        emit({ t: 'done', link, duration: totalDuration, durationStr: durStr });
         if (showBrowser) {
           await sleep(2500); // 弹窗界面保留片刻让用户看到成功界面，随后自动关闭
         } else {
@@ -294,8 +374,17 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
         return link;
       }
 
-      if (/upload failed|uploadFailed|error occurred/i.test(txt)) {
-        throw new Error('sendgb 返回上传失败，请重试');
+      // 错误检测防抖：SendGB 页面广告或 tus/resumable 分片重试可能会瞬时产生错误提示，需连续多次检测确认失败
+      const hasErrorText = /upload failed|uploadFailed|error occurred/i.test(txt);
+      if (hasErrorText) {
+        consecutiveErrors++;
+        if (consecutiveErrors === 1) {
+          emit({ t: 'log', m: '检测到分片网络波动，等待断点续传重试…' });
+        } else if (consecutiveErrors >= 10) {
+          throw new Error('SendGB 返回上传失败（多次重试未果），请检查网络后重试');
+        }
+      } else {
+        consecutiveErrors = 0;
       }
 
       if (/uploading/i.test(txt)) {
@@ -303,10 +392,38 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
         const m = txt.match(PCT_RE);
         if (m) {
           const pct = Math.min(100, parseInt(m[1], 10));
+          if (uploadStartedAt === 0 && pct > 0) {
+            uploadStartedAt = Date.now();
+          }
           if (pct !== lastProgress) {
+            if (pct > lastProgressPct) {
+              lastProgressPct = pct;
+              lastProgressTime = now; // 进度在推进，持续刷新活跃时间
+            }
             const sp = txt.match(SPEED_RE);
-            const extra = sp ? ` ${sp[0]}` : '';
-            emit({ t: 'progress', p: pct, m: `上传中 ${pct}%${extra}` });
+            let speedStr = sp ? sp[0] : '';
+            let etaStr = '';
+            const elapsed = uploadStartedAt > 0 ? (Date.now() - uploadStartedAt) / 1000 : 0;
+
+            if (elapsed >= 1 && pct > 0) {
+              const remainingSec = pct >= 100 ? 0 : Math.round((elapsed / pct) * (100 - pct));
+              etaStr = formatDuration(remainingSec);
+              if (!speedStr && totalBytes > 0) {
+                const uploadedBytes = (pct / 100) * totalBytes;
+                const speedBps = uploadedBytes / elapsed;
+                if (speedBps > 0) speedStr = human(speedBps) + '/s';
+              }
+            }
+
+            const spdPart = speedStr ? ` · 速度 ${speedStr}` : '';
+            const etaPart = etaStr ? ` · 预估剩余 ${etaStr}` : '';
+            emit({
+              t: 'progress',
+              p: pct,
+              speed: speedStr,
+              eta: etaStr,
+              m: `上传中 ${pct}%${spdPart}${etaPart}`
+            });
             lastProgress = pct;
           }
         }
@@ -330,8 +447,6 @@ async function runUpload(profileDir, files, timeoutS = 1800) {
 
       await sleep(1500);
     }
-
-    throw new Error(`超时（${timeoutS}s）未获取到下载链接`);
   } finally {
     try {
       await ctx.close();

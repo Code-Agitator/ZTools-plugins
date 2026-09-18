@@ -68,6 +68,7 @@ function apply(): void {
 
   const d = deriveFrom(forced ?? readHostAccent())
   style.setProperty('--accent-soft', d.soft)
+  style.setProperty('--accent-rgb', d.accentRgb)
   style.setProperty('--row-on-tx', d.text)
   style.setProperty('--on-accent-rgb', d.rgb)
 

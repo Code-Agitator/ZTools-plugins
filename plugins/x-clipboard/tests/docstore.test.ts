@@ -101,6 +101,7 @@ test('设置存两次：第二次要成功，且读回来是后一次的值（�
     confirmDelete: true,
     tailType: true,
     tailIndex: false,
+    tailSource: false,
     tailActs: true
   }
   const second: Settings = {
@@ -111,7 +112,9 @@ test('设置存两次：第二次要成功，且读回来是后一次的值（�
     foot: 'none',
     confirmDelete: false,
     tailType: false,
+    // 两次给**不一样**的值，才验得出"读回来的是后一次那份"
     tailIndex: true,
+    tailSource: true,
     tailActs: false
   }
 

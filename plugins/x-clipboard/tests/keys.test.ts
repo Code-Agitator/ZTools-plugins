@@ -198,3 +198,18 @@ test('pasteSlot 把 pasteN 换成 0 基下标，别的动作一律 null', () => 
   assert.equal(pasteSlot(null), null)
   assert.equal(pasteSlot(undefined), null)
 })
+
+/*
+ * ★ ←→ 已经给设置面板领走了（09-18 加）。
+ *
+ * 列表里左右没有含义 —— 面板开着时这一对键在 `onKeydown` 的守卫里就被拦下
+ * （守卫排在列表之前），落到全局那个 switch 里是空分支，这是有意的、不是漏改。
+ * 锁这条是为了两件事：① 面板的行内移动真的收得到（宿主那六个转发键本来含 ←→）；
+ * ② 以后翻键位表时能看见 ←→ 已经有主。
+ */
+test('★ ←→ 映射到 left / right（设置面板用）', () => {
+  assert.equal(resolveKey(ev({ key: 'ArrowLeft' })), 'left')
+  assert.equal(resolveKey(ev({ key: 'ArrowRight' })), 'right')
+  // 带修饰键的不是面板内那条路（面板里用的是裸方向键）
+  assert.equal(resolveKey(ev({ metaKey: true, key: 'ArrowLeft' })), null)
+})

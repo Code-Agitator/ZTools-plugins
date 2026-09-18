@@ -77,7 +77,7 @@ export function isFavorite(item: ClipContent, list: FavItem[]): boolean {
 export async function addFavorite(item: ClipContent, list: FavItem[]): Promise<FavItem[]> {
   if (isFavorite(item, list)) return list
   // 复制整条内容；漏掉 resolution 的话，收藏里的图片行会退化成「图片」两个字
-  const { type, content, preview, imagePath, resolution, files, hash } = item
+  const { type, content, preview, imagePath, resolution, files, hash, appName, bundleId } = item
   const next: FavItem[] = [
     {
       type,
@@ -87,6 +87,12 @@ export async function addFavorite(item: ClipContent, list: FavItem[]): Promise<F
       resolution,
       files,
       hash,
+      /*
+       * 来源也一起带上 —— 它跟 `resolution` 是同一个道理：少带一个字段，
+       * 收藏列表里那一行的「行尾显示来源」就会静默失效（老收藏没有这两个键 ⇒ 不显示，正常）。
+       */
+      appName,
+      bundleId,
       favId: newFavId(),
       addedAt: Date.now()
     },

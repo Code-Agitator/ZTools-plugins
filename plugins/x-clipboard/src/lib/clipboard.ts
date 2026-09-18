@@ -25,6 +25,15 @@ export interface ClipContent {
   files?: ClipFile[]
   /** 宿主给的 md5，用来判重 */
   hash?: string
+  /*
+   * 来源应用 —— **复制那一刻**的前台窗口，不是"现在是谁在前台"。
+   *
+   * 宿主 `saveItem` 时就把这两个字段一起写进文档了，`getAllItems()` 又是整条展开
+   * ⇒ **不需要任何新采集**：本插件当初删「来源」时只是没把它声明出来。
+   * ⚠️ `appName` 带 `.app` 后缀（"Visual Studio Code.app"），显示前要剥（见 `source.ts`）。
+   */
+  appName?: string
+  bundleId?: string
 }
 
 /** 宿主剪贴板历史里的一条记录 */
@@ -306,8 +315,11 @@ export function imageSrc(item: ClipContent): string {
  * 列表里一行只显示约 40 个字，没必要为了它把整篇正文跑一遍 `\s+` 正则。
  * 400 是个宽裕的上限：除非一条内容的**前 400 个字符全是空白**（正常剪贴板不会），
  * 折叠结果和扫全串完全一样。
+ *
+ * ⚠️ `highlight.ts` 也用它 —— 命中落在这 400 字之外时，那边要回到全文去取片段。
+ *    改这个数会让"行里显示多长"和"前移的窗口多大"一起变，别只改一边。
  */
-const PREVIEW_SCAN = 400
+export const PREVIEW_SCAN = 400
 
 export function previewText(item: ClipContent): string {
   if (item.type === 'text') {

@@ -1,5 +1,5 @@
 const { initService } = require("./init_service");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 
 /**
  * 搜索
@@ -75,7 +75,7 @@ function showNotification(message) {
 /**
  * 从应用打开项目
  * @param channel
- * @param path
+ * @param path 项目路径（绝对路径）
  */
 function launchProjectFromApp(channel, path) {
   const channel_info = initService.channels[channel];
@@ -83,13 +83,25 @@ function launchProjectFromApp(channel, path) {
     showNotification("未找到应用信息：" + channel);
     return;
   }
-  // 应用路径与项目路径都可能包含空格，统一用双引号包裹，保证启动命令解析正确
-  exec(`"${channel_info.launchCommand}" "${path}"`, (error) => {
+  const onLaunched = (error) => {
     if (error) {
       console.error("launch project failed:", error.message);
       showNotification("启动失败：" + String(error.message).split("\n")[0]);
     }
-  });
+  };
+  if (window.ztools.isMacOS()) {
+    // macOS：打开 .app（目录）交给 LaunchServices 处理，
+    // 应用已在运行时复用已有实例、并正确激活到前台；
+    // 直接执行 .app/Contents/MacOS/xxx（可执行文件）会绕过 LaunchServices
+    execFile(
+      "/usr/bin/open",
+      ["-a", channel_info.installLocation, path],
+      onLaunched
+    );
+  } else {
+    // Windows：execFile 以参数数组直传（不经过 shell），路径含空格/特殊字符无需转义
+    execFile(channel_info.launchCommand, [path], onLaunched);
+  }
 }
 
 exports.features = {

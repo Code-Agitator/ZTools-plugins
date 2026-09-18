@@ -95,18 +95,17 @@ class InitService {
  */
 async function scanChannels() {
   const channels = {};
-  const appList = (await getInstalledApps()).filter(
+  // 按名称只取目标 IDE（mac 端在读取 Info.plist / mdls 之前完成过滤，避免全量扫描）
+  const appList = (
+    await getInstalledApps((appName) => TARGET_APP_REGEX.test(appName || ""))
+  ).filter(
     (app) =>
       app?.appName?.trim() && // 有非空名字
       app?.appIdentifier && // 有 identifier
       !app.appIdentifier.startsWith("{") // 不是占位符
   );
-  //  过滤出匹配的应用
-  const targetAppList = appList.filter((app) =>
-    TARGET_APP_REGEX.test(app.appName)
-  );
   // 构建应用信息
-  for (let targetApp of targetAppList) {
+  for (let targetApp of appList) {
     const channelInfo = buildChannelInfo(targetApp);
     if (channelInfo) {
       channels[channelInfo.displayName] = channelInfo;
@@ -205,7 +204,8 @@ function buildChannelInfo(targetApp) {
       let appInfoFileData = fs.readFileSync(appInfoFilePath);
       appInfoFileData = JSON.parse(appInfoFileData);
       dataDirectoryName = appInfoFileData.dataDirectoryName;
-      launchCommand = targetApp.DisplayIcon;
+      // DisplayIcon 形如 "C:\...\idea64.exe,0"，去掉末尾的图标索引后才可作为可执行文件
+      launchCommand = String(targetApp.DisplayIcon || "").replace(/,\d+$/, "");
       logo_path = window.ztools.getFileIcon(launchCommand) || "";
     } else if (window.ztools.isMacOS()) {
       // mac
@@ -256,7 +256,7 @@ function readRecentProjects(displayName, channel) {
   const recentProjectList = [];
   try {
     const recentProjectsFile =
-      window.ztools.getPath("appData").replace("\ ", " ") +
+      window.ztools.getPath("appData") +
       "/JetBrains/" +
       channel.dataDirectoryName +
       "/options/recentProjects.xml";
@@ -265,22 +265,27 @@ function readRecentProjects(displayName, channel) {
       return recentProjectList;
     }
 
+    // 展开为 home 绝对路径：execFile / open 不经过 shell，路径中的 ~ 不会被展开
+    const homeDir = window.ztools.getPath("home");
     let recentProjectsFileData = fs.readFileSync(recentProjectsFile, "utf8");
     recentProjectsFileData = recentProjectsFileData.replaceAll(
       "$USER_HOME$",
-      "~"
+      homeDir
     );
 
-    // 采用node兼容方案
+    // 采用node兼容方案；component/option 单节点时是对象、多节点时是数组，
+    // 按结构遍历所有 map 下的 entry，不依赖节点顺序与固定下标
     const xmlDoc = XML_PARSER.parse(recentProjectsFileData);
-    let xml_entry = xmlDoc.application.component.option[0].map[0].entry;
+    const xml_entry = collectProjectEntries(xmlDoc);
 
     for (let index = 0; index < xml_entry.length; index++) {
       let entry = xml_entry[index];
-      let entryKey = entry["@_key"];
-      let valueNode = entry.value; // 不是 getElementsByTagName("value")[0]
-      let recentProjectMetaInfo = valueNode.RecentProjectMetaInfo;
-      let optionList = recentProjectMetaInfo.option; // 直接是数组
+      // 缺失 RecentProjectMetaInfo 的 entry 用默认时间戳，保证项目仍可见
+      const recentProjectMetaInfo =
+        entry.value && entry.value.RecentProjectMetaInfo;
+      let optionList = toNodeArray(
+        recentProjectMetaInfo && recentProjectMetaInfo.option
+      );
       let activationTimestamp = 0;
       let projectOpenTimestamp = 0;
       // 遍历 option 数组
@@ -294,10 +299,6 @@ function readRecentProjects(displayName, channel) {
         } else if (optName === "projectOpenTimestamp") {
           projectOpenTimestamp = optValue;
         }
-      }
-      // 修改属性：直接赋值，不是 setAttribute
-      if (window.ztools.isWindows() && entryKey.startsWith("~")) {
-        entry["@_key"] = entryKey.replace("~", window.ztools.getPath("home"));
       }
       recentProjectList.push({
         channel: displayName,
@@ -313,6 +314,45 @@ function readRecentProjects(displayName, channel) {
     console.error("read recent projects failed:", displayName, error.message);
   }
   return recentProjectList;
+}
+
+/**
+ * XML 节点归一为数组（fast-xml-parser 对单节点返回对象、多节点返回数组）
+ * @param value 节点值
+ * @returns 节点数组；空值返回空数组
+ */
+function toNodeArray(value) {
+  if (value == null) {
+    return [];
+  }
+  return Array.isArray(value) ? value : [value];
+}
+
+/**
+ * 收集 recentProjects.xml 中所有项目 entry
+ * 遍历所有 component/option/map，不依赖节点顺序与固定下标
+ * @param xmlDoc 解析后的 XML 对象
+ * @returns entry 节点数组
+ */
+function collectProjectEntries(xmlDoc) {
+  const entries = [];
+  const components = toNodeArray(
+    xmlDoc && xmlDoc.application && xmlDoc.application.component
+  );
+  for (const component of components) {
+    const options = toNodeArray(component && component.option);
+    for (const option of options) {
+      const maps = toNodeArray(option && option.map);
+      for (const map of maps) {
+        for (const entry of toNodeArray(map && map.entry)) {
+          if (entry && entry["@_key"]) {
+            entries.push(entry);
+          }
+        }
+      }
+    }
+  }
+  return entries;
 }
 
 exports.initService = new InitService();

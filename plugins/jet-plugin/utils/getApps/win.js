@@ -58,13 +58,7 @@ function getInstalledApps() {
             ...HKLM_SOFTWARE_Wow6432Node_Microsoft,
             ...HKCU_SOFTWARE_Microsoft,
             ...HKCU_SOFTWARE_Wow6432Node_Microsoft,
-        ].filter((app) => {
-            return {
-                "app":app.appName,
-                // todo
-                "dir":""
-            }
-        }));
+        ]);
     }));
 }
 exports.getInstalledApps = getInstalledApps;
@@ -110,6 +104,13 @@ function getAppData(appKey) {
                         }
                         if (items[i].name === "DisplayName") {
                             app.appName = items[i].value;
+                        }
+                        // buildChannelInfo 依赖这两个字段定位安装目录与启动命令
+                        if (items[i].name === "InstallLocation") {
+                            app.InstallLocation = items[i].value;
+                        }
+                        if (items[i].name === "DisplayIcon") {
+                            app.DisplayIcon = items[i].value;
                         }
                         if (items[i].name === "DisplayVersion") {
                             app.appVersion = items[i].value;

@@ -1,15 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", {value: true});
-exports.getWinInstalledApps = exports.getMacInstalledApps = exports.getInstalledApps = void 0;
+exports.getInstalledApps = void 0;
 const mac_1 = require("./mac");
 const win_1 = require("./win");
 const fs = require('fs')
 
-function getInstalledApps () {
+function getInstalledApps (nameFilter) {
+	const filter = typeof nameFilter === "function" ? nameFilter : null;
 	if (process.platform === 'darwin') {
-		return getInternalMacInstalledApps();
+		return getInternalMacInstalledApps(filter);
 	} else if (process.platform === 'win32') {
-		return (0, win_1.getInstalledApps)();
+		return (0, win_1.getInstalledApps)().then((apps) => filterAppsByName(apps.map(normalizeAppData), filter));
 	} else {
 		return new Promise((_resolve, reject) => {
 			reject('Platform not supported');
@@ -17,10 +18,10 @@ function getInstalledApps () {
 	}
 }
 
-async function getInternalMacInstalledApps () {
+async function getInternalMacInstalledApps (nameFilter) {
 	let global_application_arr = []
 	if (fs.existsSync("/Applications")) {
-		global_application_arr = await (0, mac_1.getInstalledApps)("/Applications");
+		global_application_arr = await (0, mac_1.getInstalledApps)("/Applications", nameFilter);
 		global_application_arr.forEach(item => {
 			item['app_dir'] = "/Applications"
 		})
@@ -28,7 +29,7 @@ async function getInternalMacInstalledApps () {
 
 	let system_application_arr = []
 	if (fs.existsSync("/System/Applications")) {
-		system_application_arr = await (0, mac_1.getInstalledApps)("/System/Applications");
+		system_application_arr = await (0, mac_1.getInstalledApps)("/System/Applications", nameFilter);
 		system_application_arr.forEach(item => {
 			item['app_dir'] = "/System/Applications"
 		})
@@ -47,7 +48,7 @@ async function getInternalMacInstalledApps () {
 		if (!fs.existsSync(path)) {
 			continue
 		}
-		let target_user_applications_arr = await (0, mac_1.getInstalledApps)(path);
+		let target_user_applications_arr = await (0, mac_1.getInstalledApps)(path, nameFilter);
 		target_user_applications_arr.forEach(item => {
 			item['app_dir'] = path
 		})
@@ -80,14 +81,11 @@ function normalizeAppData (item) {
 
 exports.getInstalledApps = getInstalledApps;
 
-function getMacInstalledApps (directory = "/Applications") {
-	return (0, mac_1.getInstalledApps)(directory);
+/**
+ * 按应用名过滤（上层只关心部分应用时，mac 端可前置过滤避免全量扫描）
+ * @param apps 应用列表
+ * @param filter 名称断言；为空时原样返回
+ */
+function filterAppsByName (apps, filter) {
+	return filter ? apps.filter((app) => filter((app && app.appName) || "")) : apps;
 }
-
-exports.getMacInstalledApps = getMacInstalledApps;
-
-function getWinInstalledApps () {
-	return (0, win_1.getInstalledApps)();
-}
-
-exports.getWinInstalledApps = getWinInstalledApps;

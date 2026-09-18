@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.1 - 2026-09-18
+
+### 修复
+
+- 修复 macOS 端最近项目路径中的 `$USER_HOME$` 被展开成 `~` 的问题：启动项目不经过 shell，`~` 不会被展开，IDE 会把路径当作普通文件处理；现统一展开为 home 绝对路径，Windows 端不再需要单独补 `~` 替换
+- 修复 macOS 端启动项目的方式：改为用 `open -a <应用目录>` 打开 `.app`（交给 LaunchServices），不再直接执行 `Contents/MacOS/` 下的可执行文件；应用已在运行时复用已有实例，并正确激活到前台
+
+## 1.2.0 - 2026-09-18
+
+### 修复
+
+- 修复 Windows 端扫描结果被无效 `filter` 处理、`InstallLocation` / `DisplayIcon` 字段未显式映射导致 IDE 通道构建失败的问题
+- 修复 Windows 端 `DisplayIcon` 带图标索引后缀（如 `idea64.exe,0`）导致启动命令不可用的问题
+- 修复 `recentProjects.xml` 解析硬编码节点下标（`component.option[0].map[0]`）导致结构变化时整 IDE 项目列表丢失的问题，改为按结构遍历并兼容单/多节点；缺失 `RecentProjectMetaInfo` 的项目条目不再导致整列表解析失败
+- Windows 端应用数据统一补齐默认字段（与 macOS 契约一致）
+
+### 优化
+
+- macOS 扫描前置按 bundle 目录名过滤目标 IDE，只对目标应用读取 `Info.plist` / `mdls`，不再全量扫描所有已安装应用，本机实测由约 390ms 降至约 70ms
+- 启动项目改用 `execFile` 参数数组（不经过 shell），路径含空格/特殊字符无需引号转义
+
+### 清理
+
+- 移除未使用的 `getAppsSubDirectory`（旧 `ls` 实现残留）与 `getMacInstalledApps` / `getWinInstalledApps` 导出、空的 `index.html`
+- `package.json` 补充 `"type": "commonjs"`（ZTools 文档要求）、移除无效 `main` 字段与重复的 `iconv-lite` 开发依赖
+- `plugin.json` / `package.json` 描述由占位文案改为实际功能说明
+
 ## 1.1.0 - 2026-09-17
 
 ### 新增

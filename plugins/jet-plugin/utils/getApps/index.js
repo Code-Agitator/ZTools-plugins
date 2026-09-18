@@ -10,7 +10,8 @@ function getInstalledApps (nameFilter) {
 	if (process.platform === 'darwin') {
 		return getInternalMacInstalledApps(filter);
 	} else if (process.platform === 'win32') {
-		return (0, win_1.getInstalledApps)().then((apps) => filterAppsByName(apps.map(normalizeAppData), filter));
+		// 名称前置过滤（注册表侧可借此跳过无关条目的读值），上层仍会再过滤一次，语义与 mac 一致
+		return (0, win_1.getInstalledApps)(filter).then((apps) => filterAppsByName(apps.map(normalizeAppData), filter));
 	} else {
 		return new Promise((_resolve, reject) => {
 			reject('Platform not supported');
@@ -76,6 +77,12 @@ function normalizeAppData (item) {
 	item.appLastUsedDate = item.appLastUsedDate || "";
 	item.appLastUsedTimestamp = item.appLastUsedTimestamp || 0;
 	item.appUseCount = item.appUseCount || 0;
+	// Windows 侧安装目录 / 启动命令候选（mac 端无此概念，统一兜底为空）
+	item.installDir = item.installDir || "";
+	item.installDirCandidates = Array.isArray(item.installDirCandidates) ? item.installDirCandidates : [];
+	item.launchCandidates = Array.isArray(item.launchCandidates) ? item.launchCandidates : [];
+	item.productInfoPath = item.productInfoPath || "";
+	item.dataDirectoryName = item.dataDirectoryName || "";
 	return item;
 }
 

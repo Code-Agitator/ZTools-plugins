@@ -1,4 +1,8 @@
 const { initService } = require("./init_service");
+const {
+  findLaunchExecutable,
+  normalizeWindowsPath
+} = require("../utils/getApps/win");
 const { execFile } = require("child_process");
 
 /**
@@ -73,6 +77,25 @@ function showNotification(message) {
 }
 
 /**
+ * Windows 启动命令兜底：launchCommand 可能带引号、也可能只给到安装目录，
+ * 这里统一解析成真实存在的可执行文件（解析不出来时退原始值，由 execFile 报错提示）
+ * @param channel_info 通道信息
+ * @returns 可执行文件路径；完全拿不到时返回空串
+ */
+function resolveWindowsLaunchCommand(channel_info) {
+  const rawCommand = normalizeWindowsPath(channel_info.launchCommand);
+  try {
+    const executable = findLaunchExecutable(
+      [channel_info.launchCommand],
+      [channel_info.installLocation]
+    );
+    return executable || rawCommand;
+  } catch (error) {
+    return rawCommand;
+  }
+}
+
+/**
  * 从应用打开项目
  * @param channel
  * @param path 项目路径（绝对路径）
@@ -83,10 +106,13 @@ function launchProjectFromApp(channel, path) {
     showNotification("未找到应用信息：" + channel);
     return;
   }
+  const ideName = channel_info.displayName || channel;
   const onLaunched = (error) => {
     if (error) {
       console.error("launch project failed:", error.message);
-      showNotification("启动失败：" + String(error.message).split("\n")[0]);
+      showNotification(
+        ideName + " 启动失败：" + String(error.message).split("\n")[0]
+      );
     }
   };
   if (window.ztools.isMacOS()) {
@@ -100,7 +126,12 @@ function launchProjectFromApp(channel, path) {
     );
   } else {
     // Windows：execFile 以参数数组直传（不经过 shell），路径含空格/特殊字符无需转义
-    execFile(channel_info.launchCommand, [path], onLaunched);
+    const launchCommand = resolveWindowsLaunchCommand(channel_info);
+    if (!launchCommand) {
+      showNotification(ideName + " 未找到可执行文件，请重新安装或手动指定路径");
+      return;
+    }
+    execFile(launchCommand, [path], onLaunched);
   }
 }
 

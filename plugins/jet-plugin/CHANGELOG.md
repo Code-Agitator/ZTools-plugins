@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.2 - 2026-09-18
+
+### 修复
+
+- 修复 Windows 端「能进入插件但列表完全空白」：此前能否列出项目完全取决于注册表卸载项的 `InstallLocation` 能否拼出 `product-info.json`，取不到就静默丢弃该 IDE（无日志、无兜底）；现改为多数据源 + 逐级兜底，任一环节失效都能出结果
+- 修复注册表路径值未归一化导致的定位失败：带双引号的路径（`"C:\Program Files\..."`）、带图标索引后缀（`idea64.exe,0`）、`%ProgramFiles%` / `%LOCALAPPDATA%` 等环境变量形式统一处理，并新增采集 `UninstallString`
+- 修复 Windows 启动命令缺少兜底：优先用 `product-info.json` 的 Windows 启动项，其次 `DisplayIcon`，再退到安装目录 `bin\*.exe`；都取不到时弹出带 IDE 名的系统通知，不再静默失败
+- 修复 Windows 列表项图标显示为系统默认文件夹图标：取图标改为优先传启动器 exe（Windows 下安装目录是普通目录，只能取到文件夹图标；macOS 仍取 `.app` bundle 图标，行为不变）
+- 修复 Windows 端 `appIdentifier` 为 GUID（MSI 注册的卸载项，形如 `{...}`）的 IDE 被误过滤的问题
+- 修复 `%APPDATA%\JetBrains` 下同产品多版本配置目录可能匹配错误的问题：按产品名 + 主次版本匹配，并要求存在 `options/recentProjects.xml`
+
+### 优化
+
+- Windows 新增 JetBrains 标准安装目录扫描（`%LOCALAPPDATA%\JetBrains\Toolbox\apps\`、`%ProgramFiles%\JetBrains\` 等），不依赖注册表即可发现 IDE；与注册表结果按安装目录合并去重、互相补齐字段
+- 注册表读取改为「先按卸载项名称前置过滤再读值」并把并发限制为 8（此前对每个卸载项各拉起一次 `reg.exe` 且全并发，首次进入可能长时间无响应），单次读取加 10 秒超时保护
+- IDE 扫描缓存 key 升级为 `channels.v2`，避免旧版本写入的空结果继续命中
+
 ## 1.2.1 - 2026-09-18
 
 ### 修复

@@ -39,10 +39,15 @@ const QUERY_CONCURRENCY = 8;
  * @param directory 应用目录
  * @returns A Promise with app data list
  */
-async function getInstalledApps (directory) {
+async function getInstalledApps (directory, nameFilter) {
 	const directoryContents = await getDirectoryContents(directory);
-	// ls 结果里只把 .app bundle 当作应用，普通文件/文件夹直接跳过
-	const appPaths = directoryContents.filter((item) => /\.app$/i.test(item));
+	// 目录列表里只把 .app bundle 当作应用，普通文件/文件夹直接跳过
+	let appPaths = directoryContents.filter((item) => /\.app$/i.test(item));
+	// 前置按 bundle 目录名过滤（appName 即目录名，与上层按 appName 过滤语义一致），
+	// 只对目标应用读 Info.plist / mdls，避免全量扫描
+	if (typeof nameFilter === "function") {
+		appPaths = appPaths.filter((appPath) => nameFilter(path.basename(appPath)));
+	}
 	const appsFileInfo = await getAppsFileInfo(appPaths);
 	return appsFileInfo
 		.map((appFileInfo) => getAppData(appFileInfo))
@@ -74,24 +79,6 @@ function getDirectoryContents (directory) {
 }
 
 exports.getDirectoryContents = getDirectoryContents;
-
-/**
- * getAppSubDirectorys
- * @param stdout
- * @param directory
- * @returns Apps sub directorys
- */
-function getAppsSubDirectory (stdout, directory) {
-	let stdoutArr = stdout.split(/[(\r\n)\r\n]+/);
-	stdoutArr = stdoutArr
-		.filter((o) => o)
-		.map((i) => {
-			return `${directory}/${i}`;
-		});
-	return stdoutArr;
-}
-
-exports.getAppsSubDirectory = getAppsSubDirectory;
 
 /**
  * getAppsFileInfo

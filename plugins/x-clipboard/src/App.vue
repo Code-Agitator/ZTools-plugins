@@ -19,12 +19,12 @@ import {
   fetchHistory,
   imageSrc,
   matchClip,
-  previewText,
   zt,
   type ClipContent,
   type ClipItem,
   type ClipType
 } from './lib/clipboard'
+import { rowText, splitHighlight, type Seg } from './lib/highlight'
 import { copyOne as copyToClipboard, pasteOne } from './lib/payload'
 import {
   addFavorite,
@@ -39,6 +39,15 @@ import { ACCENT_KEYS, accentSwatch } from './lib/accent'
 import { BG_PRESETS, resolveBg } from './lib/surface'
 import { pasteSlot, resolveKey } from './lib/keys'
 import { modKey } from './lib/platform'
+import {
+  cursorOf,
+  movePatch,
+  moveRow,
+  moveSlot,
+  rowIndex,
+  toggleAt,
+  type Cursor
+} from './lib/panel'
 import { peekGeom, peekKindOf, type PeekGeom, type PeekKind } from './lib/peek'
 import {
   backspaceQuery,
@@ -58,6 +67,7 @@ import {
   type MarkMode,
   type Settings
 } from './lib/settings'
+import { sourceLabel } from './lib/source'
 import { applyTheme, isDark } from './lib/theme'
 
 type View = 'history' | 'favorites'
@@ -89,18 +99,34 @@ const FOOT_REVEAL_ZONE = 30
 /*
  * 列表里的一行。历史用宿主 id 当键，收藏用收藏自己的 id —— 两者渲染完全一样。
  *
- * `preview` / `label` / `favored` 是**算好放在这儿的**，不是渲染时才现算。
+ * `text` / `seg` / `label` / `favored` 是**算好放在这儿的**，不是渲染时才现算。
  * 原因：模板里写 `{{ previewText(row.data) }}`、`isFavored(row.data)` 这种**函数调用**，
  * 意味着**每次重渲染都要对每一行重跑一遍** —— 按一下 ↑↓ 就是全表重算，
- * 而 `favKeyOf` 对文本项要拼**整个正文**、`labelOf` 要对正文跑整串正则。
+ * 而 `favKeyOf` 对文本项要拼**整个正文**、`labelOf` 要对正文跑整串正则、
+ * `rowText` + `splitHighlight` 要扫一遍正文再切片段。
  * 现在这些成本只发生在 `rows` 重算时（列表内容变了），且收藏判重走 Set 是 O(1)。
  */
 interface Row {
   key: string
   data: ClipContent
   item?: ClipItem
-  /** 行里显示的那一行字（文本已折叠空白、图片显示尺寸、文件显示名） */
-  preview: string
+  /**
+   * 行里显示的那一行字（文本已折叠空白、图片显示尺寸、文件显示名）。
+   * ⚠️ 搜索时它**不是** `previewText` 的原样输出 —— 命中在看不见的地方时会被前移（`rowText`）。
+   */
+  text: string
+  /**
+   * 上面那行字**切好的片段**，命中的那些 `hit` 为真，模板据此铺底色。
+   *
+   * ⚠️ 渲染用片段数组、**不用 `v-html`**：剪贴板内容是不可信的
+   *    （从网页复制来的东西本身就是一段 HTML）。
+   */
+  seg: Seg[]
+  /**
+   * 来源应用的短名（`VSCode` / `Chrome`…），**没有来源就是 `null`**（那一格不渲染）。
+   * 老数据和老收藏里没有 `appName`，所以这里必须是「可能为空」而不是空串。
+   */
+  source: string | null
   /** 行尾类型标签：文本 / 链接 / 图像 / 文件 */
   label: string
   /** 这条在不在收藏里（收藏视图里恒为 true） */
@@ -232,14 +258,24 @@ function favHaystack(f: FavItem): string {
  */
 const favKeys = computed(() => new Set(favorites.value.map(favKeyOf)))
 
-/** 把一条数据包成一行：显示用的三样在这一次算完，渲染时直接取 */
+/**
+ * 把一条数据包成一行：显示用的几样在这一次算完，渲染时直接取。
+ *
+ * `kw` 是搜索关键词 —— 命中靠后时 `rowText` 先把它前移到看得见的位置，再切成片段。
+ * 没有关键词时 `rowText` 原样返回 `previewText` 的结果、`splitHighlight` 返回一整段，
+ * 整个功能等于没开（加高亮之前是什么样，现在就还是什么样）。
+ */
 function makeRow(
   base: { key: string; data: ClipContent; item?: ClipItem },
-  favored: boolean
+  favored: boolean,
+  kw: string
 ): Row {
+  const text = rowText(base.data, kw)
   return {
     ...base,
-    preview: previewText(base.data),
+    text,
+    seg: splitHighlight(text, kw),
+    source: sourceLabel(base.data),
     label: labelOf(base.data),
     favored: favored || favKeys.value.has(favKeyOf(base.data))
   }
@@ -247,12 +283,13 @@ function makeRow(
 
 const rows = computed<Row[]>(() => {
   if (view.value === 'favorites') {
-    const q = query.value.text.trim().toLowerCase()
+    const kw = query.value.text
+    const q = kw.trim().toLowerCase()
     // 收藏视图里每一行本来就是收藏，不用再查一遍表
     return [...favorites.value]
       .sort((a, b) => b.addedAt - a.addedAt)
       .filter((f) => !q || favHaystack(f).includes(q))
-      .map((f) => makeRow({ key: f.favId, data: f }, true))
+      .map((f) => makeRow({ key: f.favId, data: f }, true, kw))
   }
   const want = query.value.type
   const kw = query.value.text
@@ -265,7 +302,7 @@ const rows = computed<Row[]>(() => {
   return items.value
     .filter((i) => (!want || i.type === want) && matchClip(i, kw))
     .sort((a, b) => b.timestamp - a.timestamp)
-    .map((i) => makeRow({ key: i.id, data: i, item: i }, false))
+    .map((i) => makeRow({ key: i.id, data: i, item: i }, false, kw))
 })
 
 /**
@@ -903,6 +940,16 @@ function onAnyScroll(e: Event): void {
 
 /* ---------------------------------------------------------------- 设置 */
 
+/*
+ * 设置面板的键盘光标（09-18 加）。
+ *
+ * 面板**不接 DOM 焦点** —— Tab 被「切分类」占着，真去 `focus()` 一个按钮还会带出
+ * Chromium 的 UA 焦点环（base.css 里刚掐掉的那个）。所以这里是自己画一个环表示
+ * "键盘现在停在哪一格"（`.cur`），`on`（已选中）那套强调色光晕不动。
+ * 位置怎么算、按下去改什么，全在 `lib/panel.ts`。
+ */
+const cur = ref<Cursor>({ row: 0, slot: 0 })
+
 /**
  * 开 / 关设置面板。
  *
@@ -920,6 +967,13 @@ function openSettings(): void {
   if (!willOpen) return
   hidePeek()
   confirmBox.value = null // 一次只留一个浮层
+  /*
+   * ★ 打开时把光标落到**第一行的「当前值」**上，而且**只落光标、不落值**。
+   *
+   * 这一句要是写成"选中第一个"，那按一下 ⌘/ 就会把底色、强调色悄悄刷成「默认」——
+   * 用户什么都没按，设置却变了。`cursorOf` 只算位置、返回的不是 patch，正是为了这个。
+   */
+  cur.value = cursorOf(settings.value)
 }
 
 /*
@@ -1010,6 +1064,39 @@ function onKeydown(e: KeyboardEvent): void {
     e.preventDefault()
     if (action === 'enter') runConfirm()
     else if (action === 'escape') confirmBox.value = null
+    return
+  }
+
+  /*
+   * ★ 设置面板开着时，方向键和 Enter 归面板（09-18）。
+   *
+   * 为什么必须拦在列表前面：
+   *   ① `↑↓` 本来就是列表的选择键，不拦的话「在面板里按 ↓」会让底下的列表跟着跳一格；
+   *   ② `Enter` 更严重 —— 它会一路走到 `case 'enter'` → `pasteActive()`，也就是
+   *      「粘一条 + 插件窗口一起关掉」，可面板里按 Enter 的人只想落一个设置值。
+   *      这跟 09-17 那个确认框 Enter 穿透是同一类事故，所以摆在同一个位置：
+   *      **确认框（更模态）在前，面板在后，两者都在列表之前**。
+   *
+   * 只吃 `↑↓←→Enter` 五个键，其余一律放行 —— 面板不是模态：搜索框照样能打字
+   * （Esc / Backspace / 可打印字符都走它们原来的路），Tab 也照样切分类。
+   *
+   * `e.repeat` 一律挡掉：长按会连发，而 `←→` 在单选组上是**直接落库**的
+   * （`updateSettings` → `saveSettings`，没有防抖）—— 连发就是一串互相踩的写请求，
+   * 而 `upsertDoc` 是"先读 rev 再写"，踩起来会**静默丢数据**（跟 09-15 那个
+   * 「设置重启就没了」同一个坑）。宁可让人一格一格按。
+   */
+  if (
+    settingsOpen.value &&
+    (action === 'up' ||
+      action === 'down' ||
+      action === 'left' ||
+      action === 'right' ||
+      action === 'enter')
+  ) {
+    e.preventDefault()
+    if (e.repeat) return
+    takeKeyboard()
+    panelKey(action)
     return
   }
 
@@ -1127,6 +1214,60 @@ function onKeydown(e: KeyboardEvent): void {
       void openSettings()
       break
   }
+}
+
+/*
+ * 面板里那几个键吃到之后干什么（09-18）。
+ *
+ * 三种控件、两套规矩：
+ *   · 单选行（底色 / 强调色 / 选中项 / 底栏）：`←→` **移到哪一颗就是选中哪一颗** ——
+ *     面板里的单选本来就是"光标即选中"，所以改个颜色只按一下。
+ *   · 行尾那一行是**多选**（类型 / 序号各自独立、可以都开也可以都关）：
+ *     `←→` **只挪光标**，`Enter` 才切那一颗。"移到哪颗就点亮哪颗"在这儿是错的 ——
+ *     从类型滑到序号会顺手把序号也点亮。
+ *   · 开关行：`←→` 就是往左拨（关）/ 往右拨（开）。
+ * `↑↓` 一律只换行 —— 落点重算成那一行的当前值，不落值。判定全在 `lib/panel.ts`（有单测）。
+ */
+type PanelKey = 'up' | 'down' | 'left' | 'right' | 'enter'
+
+function panelKey(action: PanelKey): void {
+  if (action === 'enter') {
+    const patch = toggleAt(settings.value, cur.value)
+    if (patch) updateSettings(patch)
+    scrollCursorIntoView()
+    return
+  }
+
+  if (action === 'up' || action === 'down') {
+    cur.value = moveRow(cur.value, action === 'up' ? -1 : 1, settings.value)
+  } else {
+    /*
+     * 先按**旧**光标算该落什么值、再挪光标：`movePatch` 自己会算目标格，
+     * 到边了（根本没挪动）它回 null —— 那时候什么都不该写。
+     */
+    const patch = movePatch(cur.value, action === 'left' ? -1 : 1)
+    if (patch) updateSettings(patch)
+    cur.value = moveSlot(cur.value, action === 'left' ? -1 : 1)
+  }
+  scrollCursorIntoView()
+}
+
+/** 模板里认「这一格是不是光标」：行名 → 行号只认行表那一份，**模板不许写行号** */
+function isCur(id: string, slot: number): boolean {
+  return cur.value.row === rowIndex(id) && cur.value.slot === slot
+}
+
+/**
+ * 把光标滚进视野。
+ *
+ * 面板内容比窗口高的时候必须滚一下（强调色那 13 颗占两行，窗口拉矮了就到屏幕外了），
+ * 否则按 ↓ 之后光标跑去看不见的地方，人就不知道它去哪了。
+ * `block: 'nearest'`：已经在视野里就一动不动 —— 不然每按一下整块面板都跟着跳。
+ */
+function scrollCursorIntoView(): void {
+  void nextTick(() => {
+    document.querySelector('.sheet .cur')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  })
 }
 
 /* ---------------------------------------------------------------- 生命周期 */
@@ -1249,12 +1390,18 @@ onUnmounted(() => {
 <template>
   <div ref="rootRef" class="root" :class="['mark-' + settings.mark, { 'sheet-open': settingsOpen }]">
     <div v-if="rows.length" ref="listRef" class="list">
+      <!-- ⚠️ 面板开着时列表的「选中」要收起来（`!settingsOpen`）—— **一屏只留一个选中，它在面板里**
+           （老大 09-18 真机提的）。收掉的只是这一个类，`activeKey` 一点没动：面板不是模态，
+           `⌘1`–`⌘9` 秒贴、`Delete` 删的仍然是这一行。
+           ⚠️ **别改成用 CSS 收**（写 `.sheet-open .row.on { … }` 那种）：mark 三档 + 实心档那组
+              "行内零件全覆盖"（`.t` / `.thumb` / `.tag` / `.num` / `.src` / `.act`）都得跟着逐条
+              抵消，漏一处就是"面板开着、那一行的字还反着白"——白字铺在透明底上等于看不见。 -->
       <div
         v-for="(row, i) in visibleRows"
         :key="row.key"
         class="row"
         :class="{
-          on: row.key === activeKey,
+          on: !settingsOpen && row.key === activeKey,
           tall: row.data.type !== 'text'
         }"
         @click="onRowClick(row)"
@@ -1283,20 +1430,31 @@ onUnmounted(() => {
           </svg>
         </div>
 
-        <div class="t">{{ row.preview }}</div>
+        <!-- 行里那行字。命中的片段多铺一层强调色底（`.hl`）。
+             ⚠️ 走片段数组、**不用 `v-html`** —— 剪贴板内容是不可信的：从网页复制来的
+                东西本身就是一段 HTML，塞进 `v-html` 等于在插件里把它渲染出来。
+             ⚠️ 整行必须写在一行里：`.t` 是单行省略号，标签之间多一个换行/缩进都会
+                变成真实字符，白白挤掉一格。 -->
+        <div class="t"><span v-for="(s, k) in row.seg" :key="k" :class="{ hl: s.hit }">{{ s.t }}</span></div>
 
-        <!-- 行尾那一格。三样东西，各自可以在设置里关掉：
+        <!-- 行尾那一格。四样东西，各自可以在设置里关掉：
                · 序号（只给前 9 行）—— 配 ⌘1–⌘9 秒贴
+               · 来源（VSCode / Chrome…）—— 这条是在哪个软件里复制出来的
                · 类型标签（文本 / 链接 / 图像 / 文件）
                · 收藏 / 删除两枚按钮 —— **鼠标划过、或这行是当前行**时出现（两者一致）；
-                 它出现时上面两样在这一格让位（同一个位置叠着，见下面对应的 CSS）
+                 它出现时上面三样在这一格让位（同一个位置叠着，见下面对应的 CSS）
              按钮是 absolute 叠在这一格的右端、靠透明度切换，所以它出现/消失都不改行宽
-             （`.tail-acts` 给它留了固定宽度）。三样都不开就是彻底没有行尾。
+             （`.tail-acts` 给它留了固定宽度）。四样都不开就是彻底没有行尾。
              ⚠️ 序号必须取 `v-for` 的下标 —— 跟 `pasteAt()` 取的是同一个 `visibleRows`，
                 另算一份迟早错位（按 ⌘3 粘到第 4 条）。
              按钮都得 .stop，不然点它们会连带触发行的 click（改选中）/ dblclick（复制）。 -->
         <div class="tail" :class="{ 'tail-acts': settings.tailActs }" @dblclick.stop>
           <span v-if="settings.tailIndex && i < 9" class="num">{{ i + 1 }}</span>
+          <!-- 来源排在类型标签**前面**：两个都是淡淡的纯文字，挨着放；类型标签是带底色的
+               药丸，留在最右端当这一格的收尾。
+               ⚠️ `row.source` 为空时**不渲染**（老数据 / 老收藏没有 appName）——
+                  显示成「未知」等于凭空多一列。 -->
+          <span v-if="settings.tailSource && row.source" class="src">{{ row.source }}</span>
           <span v-if="settings.tailType" class="tag">{{ row.label }}</span>
           <div v-if="settings.tailActs" class="acts">
             <button
@@ -1407,16 +1565,16 @@ onUnmounted(() => {
           <div class="dots">
             <button
               class="dot auto"
-              :class="{ on: settings.bg === 'auto' }"
+              :class="{ on: settings.bg === 'auto', cur: isCur('bg', 0) }"
               @click="updateSettings({ bg: 'auto' })"
             >
               默认
             </button>
             <button
-              v-for="p in BG_PRESETS"
+              v-for="(p, i) in BG_PRESETS"
               :key="p.key"
               class="dot"
-              :class="{ on: settings.bg === p.key }"
+              :class="{ on: settings.bg === p.key, cur: isCur('bg', i + 1) }"
               :style="{ background: resolveBg(p.key, isDark) }"
               @click="updateSettings({ bg: p.key })"
             ></button>
@@ -1428,16 +1586,16 @@ onUnmounted(() => {
           <div class="dots">
             <button
               class="dot auto"
-              :class="{ on: settings.accent === 'auto' }"
+              :class="{ on: settings.accent === 'auto', cur: isCur('accent', 0) }"
               @click="updateSettings({ accent: 'auto' })"
             >
               默认
             </button>
             <button
-              v-for="k in ACCENT_KEYS"
+              v-for="(k, i) in ACCENT_KEYS"
               :key="k"
               class="dot"
-              :class="{ on: settings.accent === k }"
+              :class="{ on: settings.accent === k, cur: isCur('accent', i + 1) }"
               :style="{ background: accentSwatch(k, isDark) }"
               @click="updateSettings({ accent: k })"
             ></button>
@@ -1448,36 +1606,48 @@ onUnmounted(() => {
           ────────────────────────────────────────────────────────────────
           ★ 09-17 老大要求：按「控件类型」分三段，段内按行长**从短到长**（短的在上面，逐级变宽）。
             ① 色点段：底色（4 颗、一行）→ 强调色（13 颗、两行）
-            ② 选中段：行尾（2 颗）→ 选中项（3 颗）→ 底栏（4 颗）
+            ② 选中段：行尾（3 颗）→ 选中项（3 颗）→ 底栏（4 颗）
             ③ 开关段：行尾按钮 / 显示详情 / 删除前确认
           为什么不按"主题"排（比如让「行尾按钮」贴着「行尾」）：那样三种控件形状会一格一格
           交替出现 —— 色点、药丸、开关、药丸、开关…… 右边缘那一列开关被药丸行打断，看着毛躁。
           同形状的挨在一起，面板才有节奏。段与段之间靠 `.blk` 多留一点空。
 
           ⚠️ **方向是「短 → 长」**，别搞反（我第一版就做反了）：老大原话「为什么不是每个类都是从
-             短到长呢，你是从长到短」。他给的判据很直接 —— 底色段 4 颗在 13 颗上面、行尾 2 颗在
+             短到长呢，你是从长到短」。他给的判据很直接 —— 底色段 4 颗在 13 颗上面、行尾那几颗在
              底栏 4 颗上面。别再拿"重的放上面更稳"这种直觉改回长→短。
+             （09-18 行尾加了第 3 颗「来源」之后，行尾和选中项都是 3 颗 —— 这一段平了，
+              两行谁前谁后都不违背判据，所以**保持原样不动**，别为"凑成一个严格递增"去调顺序。）
           ⚠️ 开关那三行的控件宽度**完全一样**（都是"左标题 + 右侧开关"的满宽行），按颗数没有可排的；
              按**标签字数**排恰好也就是现在的先后（行尾按钮 4 / 显示详情 4 / 删除前确认 5），所以不动。
         -->
-        <!-- 行尾：**多选**（跟色点一样是「点一下选上、再点一下取消」，区别只是这里能同时选两个）。
-             两个都不选 = 行尾什么都没有。序号和类型是两件独立的事，不该互相顶掉 —— 不做成三选一。 -->
+        <!-- 行尾：**多选**（跟色点一样是「点一下选上、再点一下取消」，区别只是这里能同时选好几个）。
+             都不选 = 行尾什么都没有。序号 / 来源 / 类型是三件独立的事，不该互相顶掉 —— 不做成三选一。
+             ⚠️ 三颗的**先后必须跟 `panel.ts` 里 `PANEL_ROWS.tail.values` 的顺序一致**：
+                `←→` 挪的是第几颗、`Enter` 切的就是 `values[第几]` 那个键，错位就会静默切错开关。
+                改顺序要么两边一起改，要么别改（`tests/panel.test.ts` 钉着这条）。 -->
         <div class="grp blk">
           <div class="lbl">行尾</div>
           <div class="chips">
             <button
               class="chip"
-              :class="{ on: settings.tailType }"
+              :class="{ on: settings.tailType, cur: isCur('tail', 0) }"
               @click="updateSettings({ tailType: !settings.tailType })"
             >
               类型
             </button>
             <button
               class="chip"
-              :class="{ on: settings.tailIndex }"
+              :class="{ on: settings.tailIndex, cur: isCur('tail', 1) }"
               @click="updateSettings({ tailIndex: !settings.tailIndex })"
             >
               序号
+            </button>
+            <button
+              class="chip"
+              :class="{ on: settings.tailSource, cur: isCur('tail', 2) }"
+              @click="updateSettings({ tailSource: !settings.tailSource })"
+            >
+              来源
             </button>
           </div>
         </div>
@@ -1486,10 +1656,10 @@ onUnmounted(() => {
           <div class="lbl">选中项</div>
           <div class="chips">
             <button
-              v-for="m in MARK_CHOICES"
+              v-for="(m, i) in MARK_CHOICES"
               :key="m.v"
               class="chip"
-              :class="{ on: settings.mark === m.v }"
+              :class="{ on: settings.mark === m.v, cur: isCur('mark', i) }"
               @click="updateSettings({ mark: m.v })"
             >
               {{ m.label }}
@@ -1501,10 +1671,10 @@ onUnmounted(() => {
           <div class="lbl">底栏</div>
           <div class="chips">
             <button
-              v-for="f in FOOT_CHOICES"
+              v-for="(f, i) in FOOT_CHOICES"
               :key="f.v"
               class="chip"
-              :class="{ on: settings.foot === f.v }"
+              :class="{ on: settings.foot === f.v, cur: isCur('foot', i) }"
               @click="updateSettings({ foot: f.v })"
             >
               {{ f.label }}
@@ -1512,12 +1682,20 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <button class="opt blk" @click="updateSettings({ tailActs: !settings.tailActs })">
+        <button
+          class="opt blk"
+          :class="{ cur: isCur('tailActs', 0) }"
+          @click="updateSettings({ tailActs: !settings.tailActs })"
+        >
           <span class="nm">行尾按钮</span>
           <span class="sw" :class="{ on: settings.tailActs }"><i /></span>
         </button>
 
-        <button class="opt" @click="updateSettings({ peek: !settings.peek })">
+        <button
+          class="opt"
+          :class="{ cur: isCur('peek', 0) }"
+          @click="updateSettings({ peek: !settings.peek })"
+        >
           <span class="nm">显示详情</span>
           <span class="sw" :class="{ on: settings.peek }"><i /></span>
         </button>
@@ -1527,7 +1705,11 @@ onUnmounted(() => {
           这句提醒已经**从面板挪进 README**（老大要求面板不写文案）——
           以后改这块时别顺手写出"关了也找得回来"之类的说法。只管单条，清空永远会问。
         -->
-        <button class="opt" @click="updateSettings({ confirmDelete: !settings.confirmDelete })">
+        <button
+          class="opt"
+          :class="{ cur: isCur('confirmDelete', 0) }"
+          @click="updateSettings({ confirmDelete: !settings.confirmDelete })"
+        >
           <span class="nm">删除前确认</span>
           <span class="sw" :class="{ on: settings.confirmDelete }"><i /></span>
         </button>
@@ -1673,8 +1855,9 @@ onUnmounted(() => {
   background: rgba(var(--on-accent-rgb), 0.18);
   color: var(--row-on-tx);
 }
-/* 序号没有那个底，只要反白 —— 漏了它这一行在实心主题色上就是一团看不见的灰字 */
-.root.mark-solid .row.on .num {
+/* 序号和来源都没有那个底，只要反白 —— 漏一个，那一样在实心主题色上就是一团看不见的灰字 */
+.root.mark-solid .row.on .num,
+.root.mark-solid .row.on .src {
   color: var(--row-on-tx);
 }
 .root.mark-solid .row.on .act {
@@ -1708,6 +1891,37 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/*
+ * 搜索命中：给命中的那几个字铺一层强调色底（片段由 `splitHighlight` 切好，模板 `v-for` 出来）。
+ *
+ * 一律用**底色**表达、不动字色：动字色会跟「实心档整行反白」正面打架，
+ * 而且中英混排里逐字换色读起来是断的。
+ *
+ * 两档轻重 —— 一屏只留一个重音：**当前行重、其余行轻**。
+ * 不这样分的话，一列里每一行都有好几块同样重的色块，眼睛不知道该落哪。
+ *
+ * ⚠️ 这个底必须是**强调色的半透明层**（`rgba(var(--accent-rgb), …)`），不能写死一个色：
+ *    强调色可能是宿主注入的（用户会在 ZTools 设置里换），硬写就跟宿主脱钩了。
+ */
+.t .hl {
+  background: rgba(var(--accent-rgb), 0.26);
+  border-radius: var(--radius-sm);
+}
+.row.on .hl {
+  background: rgba(var(--accent-rgb), 0.5);
+}
+/*
+ * 实心档要**反过来**：那一档整行铺的就是强调色，命中再铺一层强调色等于没标。
+ * 所以这里改用"字色做底"——跟同档下缩略图底 `rgba(var(--on-accent-rgb), .22)`
+ * 是同一套语言（见上面那组 mark-solid 覆盖），再加粗补一点份量。
+ *
+ * ⚠️ 只有实心档需要这条。描框档不铺底、底色档那 13% 还压得住 26% 的高亮，
+ *    别顺手给它们也来一条（那就成了"三档三个样"，说不清为什么）。
+ */
+.root.mark-solid .row.on .hl {
+  background: rgba(var(--on-accent-rgb), 0.28);
+  font-weight: 700;
 }
 
 .thumb {
@@ -1764,6 +1978,23 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
   transition: opacity 0.15s;
 }
+/*
+ * 来源（VSCode / Chrome…）。跟序号同一档：**淡淡的纯文字**，不是内容本身 ——
+ * 它是"这条从哪儿来"的参考线，不该跟正文抢注意力。
+ *
+ * ⚠️ 那三行截断必须有：`appName` 是**任意应用**给的，短名表只覆盖已知那几个，
+ *    碰上一个长名字（"某公司内部工具.app"）这一格会把 `.t` 挤掉一大截。
+ *    `.t` 是 `flex: 1; min-width: 0`，挤不破，但行会一眼看出来难看。
+ */
+.src {
+  color: var(--tx-3);
+  font-size: 11px;
+  max-width: 84px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: opacity 0.15s;
+}
 .tag {
   padding: 1px 5px;
   border-radius: var(--radius-sm);
@@ -1802,7 +2033,9 @@ onUnmounted(() => {
 .row:hover .tail-acts .tag,
 .row.on .tail-acts .tag,
 .row:hover .tail-acts .num,
-.row.on .tail-acts .num {
+.row.on .tail-acts .num,
+.row:hover .tail-acts .src,
+.row.on .tail-acts .src {
   opacity: 0;
 }
 .row:hover .acts,
@@ -2149,14 +2382,11 @@ kbd {
 }
 /*
  * ★ 面板里的小按钮只有一种长相：**药丸**（`border-radius: var(--radius-pill)`）。
- *   未选中 = 裸文字（透明底 + 次文本灰），选中 = 铺一层 `--accent-soft` 的淡底、
- *   字取强调色、外面再晕一圈同色 —— **用光晕（Ring）表达选中，不用边框**。
+ *   未选中 = 裸文字（透明底 + 次文本灰）；**选中的"效果"跟随 `mark` 三档** —— 见下面那段。
  *
  *   ⚠️ 以前每颗都垫一层 `rgba(127,127,127,.1)` 的灰底，一排看过去像一排实心按钮；
  *   面板「默认」档是透明的（露窗口毛玻璃），灰底在毛玻璃上尤其吵。
  *   现在只有"选中的那一颗"有底，其余就是文字。
- *   ⚠️ 光晕取 `--accent-soft`（强调色 13%）而不是实色 —— 实色环在浅色主题下就是
- *   一道硬边，正是这次要换掉的东西。
  *   ⚠️ `.dot.auto`（「默认」那颗）走同一套：它是药丸，不是色点。它比 `.chip`
  *   多写一条 `width: auto` —— `.dot` 那个 14px 是给色点的，不能套到它头上。
  */
@@ -2177,11 +2407,40 @@ kbd {
 .dot.auto:hover {
   background: var(--row-hover);
 }
+/*
+ * ★ 选中的"效果"**跟随 `mark` 三档**（老大 09-18 真机提的）。
+ *
+ *   跟列表行 `.row.on`、底栏两颗 `.clr:hover` 是**同一套语汇**：描框 / 淡底 / 实心。
+ *   来由：界面上凡是"被选中"的地方只能有一句话 —— 否则行是描框、面板里却铺着淡底，
+ *   同一屏里两套规矩，改一次 `选中项` 只统一了一半。
+ *
+ *   兜底这条 = 淡底档（也管 `mark` 还没读出来的那一瞬）。
+ *   ⚠️ 原来是「淡底 + 外面再晕一圈 3px 同色光晕」，**光晕那条已删** ——
+ *      "描框档"要的就是干净的一圈，光晕留着会让它看起来像两层环。
+ */
 .chip.on,
 .dot.auto.on {
   background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* 描框档（默认）：不铺色、只描一圈 —— 跟 `.row.on` 的 inset 阴影是同一句话。
+   ⚠️ `background: none` 是必须的：兜底那条铺了淡底，不撤掉就是"描框 + 淡底"两层。
+      代价是这一档里 hover 一颗已选中的药丸不再变色（`background` 被这条压住了）——
+      它已经是选中态，不给额外的 hover 反馈反而是对的。 */
+.root.mark-border .chip.on,
+.root.mark-border .dot.auto.on {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+/* 实心档：整颗铺满 + 字反白。
+   ⚠️ 补一条 `box-shadow: none`：`.dot.auto`（「默认」那颗）身上还挂着 `.dot` 那圈
+      1px 灰底环和 `.dot.on` 的 5px 灰环（见下面 `.dot` 那段），铺了实底之后
+      再套一圈灰环 = 实心档唯一一处"不干净"。`.chip` 本来就没有环，这条对它无害。 */
+.root.mark-solid .chip.on,
+.root.mark-solid .dot.auto.on {
+  background: var(--accent);
+  color: var(--row-on-tx);
+  box-shadow: none;
 }
 /* 「默认」+ 12 个色点，一行摆不下（面板内容区 268px），让它自己换行。
    09-17 收敛：色点 20px → 14px、间距 8px → 12px（点小了但更透气，一行反而放得下更多）
@@ -2203,7 +2462,8 @@ kbd {
   box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.25);
 }
 /*
- * 选中的色点：留一圈底色当缝、外面再套一圈中性环，免得跟色点本身撞色。
+ * 色点的选中：留一圈底色当缝、外面再套一圈中性环，免得跟色点本身撞色。
+ * ★ 这条现在只管**淡底档 / 兜底**（描框档和实心档换成强调色环，见下面两条）。
  * ⚠️ 缝要取 --surface-float（浮层自己的底色）而不是 --surface —— 色点在设置面板里，
  * 而面板「默认」档下是透明的（露出窗口毛玻璃），拿它当缝就等于没缝。
  * 09-17：环从 `--tx-2` 实色改成 35% 中性灰、缝和环一起放大两档 ——
@@ -2213,11 +2473,147 @@ kbd {
 .dot.on {
   box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 5px rgba(127, 127, 127, 0.35);
 }
+/*
+ * 色点也有「选中」，也跟随 `mark` 三档 —— 但色点**没法铺底、也没字可反白**
+ * （它本身就是一块颜色），所以三档在它身上只能靠"那圈环"的粗细 / 颜色表达：
+ *   描框档 = 细一点的强调色环；实心档 = 粗的强调色环；
+ *   淡底档 = 就保持上面那条中性灰环（色点没有"底"可铺 ⇒ 这一档不加表达）。
+ *
+ * ⚠️ 必须 `:not(.auto)`：「默认」那颗身上**也挂着 `.dot` 类**（模板里是 `class="dot auto"`），
+ *    不排掉的话这条会把药丸的环也换成圆环。那两套类名撞在一起是历史遗留 ——
+ *    面板里凡是写 `.dot` 的规则，都得先想一遍"会不会误伤 `.auto`"。
+ * ⚠️ `--surface-float` 那圈"缝"不能省：环直接贴着色点的话，跟色点本身撞色的那几颗
+ *    （比如正在用的那颗强调色）就看不出环在哪了。
+ */
+.root.mark-border .dot:not(.auto).on {
+  box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 3.5px var(--accent);
+}
+.root.mark-solid .dot:not(.auto).on {
+  box-shadow: 0 0 0 2px var(--surface-float), 0 0 0 5px var(--accent);
+}
+/*
+ * ★ 键盘光标（09-18）：`↑↓←→` 在面板里挪的就是它。
+ *
+ * 跟「选中」（`.on`）**必须是两套**，因为两者会同时出现 —— 光标正停在一个已选中的
+ * 控件上是常态（打开面板时它就落在当前值上）：
+ *   · `.on` = 强调色（淡底 + 光晕 / 色点是灰光晕），说的是"这个值是当前值"；
+ *   · `.cur` = 中性灰的**两层**（主线 + 一圈更淡的同色外带），说的是"键盘停在这儿"。
+ *     ⚠️ 别用 `--accent`：那就跟"选中"撞成同一个意思，分不出哪一个是光标。
+ *
+ * 为什么用 `outline` 而不是 `box-shadow`：`.on` 那几条光晕本来就写在 box-shadow 里，
+ * 用 box-shadow 就得跟每一条各拼一次（药丸 / 色点 / 「默认」/ 开关……拼漏一处就是
+ * "选中时看不见光标"）。`outline` 是另一条通道，天然互不覆盖，也不用管圆角 ——
+ * 它会跟着 `border-radius` 走（色点是正圆、药丸是胶囊，都自动对上）。
+ *
+ * 为什么不用 `:focus` / UA 焦点环：面板**不接 DOM 焦点**（Tab 被「切分类」占了，
+ * 真去 focus 还会把 base.css 里刚掐掉的琥珀色 UA 环带回来）。所以这里自己画一个。
+ * 顺带：`.cur[data-v-x]`（0,2,0）压得过 `button:focus`（0,1,1），环不会被那条 outline:none 吃掉。
+ *
+ * ⚠️ `outline-offset` + 环宽决定**往外占多宽**，这是唯一要算的数（v3 起）：
+ *    药丸 / 开关行 = 2px 缝 + 2px 线 + 3px 晕 = 往外 **7px**；
+ *    `.chips` 那排 gap 10px、`.opt` 之间 16px，都塞得下。
+ *    色点 14px 却只隔 12px，**塞不下**（见下面那两条）—— 所以色点只有线、没有晕。
+ */
+/*
+ * ★ v3（09-18 晚，老大从四个方案里挑了"A"）。
+ *
+ * 来由：v2 把方角改圆之后他仍不满意 ——
+ * **「环这种形式没问题，就是环能不能做好看一点？现在就一条细细的黑线来做环，
+ *   感觉不怎么好看，有没有好看的做法？」**
+ * ⇒ 病根不是"线太细"，是**单独一条实心边只会被读成"框"**。
+ *   现代焦点环（Tailwind 的 ring、Chrome、macOS）都是**两层**：一条主线 + 一圈同色更淡的
+ *   外带，叠起来才读成"光"。另一层问题是 `--tx-1` 近黑，对比度压过旁边的开关键，抢戏。
+ *
+ * v3 = 两件事：① 线从近黑的 `--tx-1` 换成**中性灰** `--cur-line`，1.5px → 2px；
+ *              ② 外面加一层 `--cur-halo` 的淡晕（伪元素）。两个变量都在 base.css。
+ *
+ * ⚠️ 晕**必须挂在伪元素上**，不能写在 `.cur` 自己身上：`.on` 那几条（描框 inset /
+ *    实心铺色 / 色点光晕）**全在 box-shadow 里**，写在同一个盒子上就是互相覆盖，
+ *    得逐条跟 `.on` 各拼一次（拼漏一处 = "选中时看不见光标"）。
+ *    伪元素是**另一个盒子**，挂它身上就跟 `.on` 互不干扰 —— 这才是既拿到两层、
+ *    又不用跟 `.on` 拼通道的写法。
+ * ⚠️ 两层都走 **`outline` 通道**（不是 box-shadow）：它是独立通道，
+ *    而且**天然跟着 `border-radius` 走**（`outline-offset` 会连半径一起往外扩）——
+ *    药丸是胶囊、色点是正圆、开关行是 8px 圆角，三种形状都不用另外写数。
+ *    ⚠️ 这一点是**踩过坑才定死的**：第一版拿 `box-shadow` 画晕，半径得自己算，
+ *       结果四个角上晕和主线之间露出一道背景色（老大真机一眼看出来了）。详见下面 `.cur::after`。
+ * ⚠️ 不许出现 `--accent`：那会跟"选中"撞成同一个意思（测试钉着这条）。
+ *
+ * ⚠️ 中间那版"开关行改铺淡底、药丸 / 色点换浅灰环"的写法**已被老大否决**过：
+ *    他要的是**统一** —— 满屏"键盘停在这儿"只有**一圈环**这一种说法。
+ *    别因为 `.on` 的档位多就再分两套画法。
+ */
+.cur {
+  /* 伪元素要拿它当定位父级 */
+  position: relative;
+  outline: 2px solid var(--cur-line);
+  outline-offset: 2px;
+}
+/*
+ * 晕：**跟元素自己同一个盒子**（`inset: 0`），再靠 `outline-offset` 把它推到主线外面去
+ * （主线外缘在 4px，晕铺 4→7px，跟主线紧挨）。
+ *
+ * ⚠️⚠️ 为什么**不能**写成 `inset: -4px` + `box-shadow`（第一版就是这样，老大真机一眼看出毛病）：
+ *    `border-radius: inherit` 继承到的是 `.opt` 自己的 **8px**，可盒子已经被外推了 4px，
+ *    那一圈的正确圆角应该是 **12px**。半径偏小 ⇒ 角的弧"少切一块"⇒ 晕在**四个角上鼓到主线
+ *    外面**，中间露出一道约 2px 的背景色。直边好好的，只有角上有缝 —— 这就是它的指纹。
+ *    （老大截图的原话：「描边和晕为什么没有贴一起，中间有白色底。是描边的圆角和晕的圆角
+ *      不一样吗？」—— 三个字：是的，就是。逐像素量出来 y=27 直边处线/晕相邻 0 缝，
+ *      y=19/20 圆角处夹着 2px 的 `#f4f4f4`。）
+ *
+ * ⇒ 修法：**让盒子跟元素完全重合**（`inset: 0`），这样 `border-radius: inherit` 就永远是对的；
+ *    往外推的活儿交给 `outline-offset` —— 它是**沿着圆角往外扩**的（半径自己 +offset），
+ *    所以药丸、正圆、8px 圆角三种形状都不用另外写数。
+ *    （佐证：主线那个 outline 在 `offset: 2px` 下量出来的角半径是 10 而不是 8 ⇒
+ *      `outline-offset` 确实会扩半径，不是把方框平移。）
+ * ⚠️ 别再换成 `box-shadow`：那是"另一个盒子"，半径得自己算，就是上面这个坑。
+ */
+.cur::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  outline: 3px solid var(--cur-halo);
+  outline-offset: 4px;
+  pointer-events: none;
+}
+/*
+ * 色点又小又密（14px 点、12px 间距），而且外面本来就挂着"选中环"（实心档到 5px）——
+ * 再叠一圈晕就是 7 + 3.5 > 12，**算术上顶到隔壁那颗去了**。所以色点只画线、不画晕。
+ * 缝给 4.5px 而不是原来的 4px：线加粗到 2px 后，4px 的缝会让环压进"实心档"那圈 5px 环里。
+ */
+.root .sheet .dot.cur {
+  outline-offset: 4.5px;
+}
+.root .sheet .dot.cur::after {
+  content: none;
+}
 .opt {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   width: 100%;
+  /*
+   * ★ 这个圆角**只为一件事存在**：塑形键盘光标那圈环（`.cur`）。
+   *   `.opt` 自己 `background: none`、没有任何背景色，所以这个值**页面上永远看不见** ——
+   *   它只是经由 `outline` 让那圈环跟着弯（见 `.cur` 那段）。
+   *
+   * ★ 取 `--radius-sm`(4) 而不是 `--radius-md`(8)：**为了跟列表项的描框弧度对齐。**
+   *   两个框的弧度不能比"`border-radius` 写了多少"，得比**那圈线自己的外轮廓半径**：
+   *     · 列表项 `.row.on`（描框档）= 8px 圆角 + `inset 1.5px` **贴边往里** ⇒ 外轮廓 **8px**
+   *     · 这里的环 = 元素圆角 + `outline-offset: 2px` + 2px 线（**往外让**）⇒ 外轮廓 **圆角 + 4**
+   *   所以元素圆角必须是 **4**，环的外轮廓才是 8 —— 跟列表项一模一样。
+   *   三条轮廓一起对：环 **6 / 7 / 8** vs 列表项 **6.5 / 7.25 / 8**（差 ≤0.5px）。
+   *
+   * 来由（老大 09-18 真机，同一处第三次返工）：
+   *   先是「方形不好看」⇒ v2 给了 8px；然后他一句
+   *   **「你设置里面这个环的角弧度，有没有参考列表项的描框的角的弧度？」**
+   *   —— 才发现 8px 的底让环的外轮廓成了 12px，**比列表项圆了整整 4px**。
+   * ⚠️ 别再调回 `--radius-md`：环会立刻"圆一圈"，又跟列表项对不上。
+   * ⚠️ 也别给 `.opt` 铺底去表达光标：满屏"键盘停在这儿"只有**一圈环**这一种说法；
+   *    而且 `.on` 那套全写在 `background` / `box-shadow` 上，铺底会跟"选中"打架。
+   */
+  border-radius: var(--radius-sm);
   /* 开关是**连着排的一整段**（行尾按钮 / 显示详情 / 删除前确认）——
      09-17 重排后它们不再被药丸行打断（原来「底栏」夹在中间）。
      段内的行距就靠这条 16px，段**上面**那一次额外空隙由 `.blk` 给。 */

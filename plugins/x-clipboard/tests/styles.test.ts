@@ -141,6 +141,10 @@ test('★ 底栏按钮的效果跟 mark 三档 + 强调色走（别退回"只变
  * （Chromium 的 UA focus 环，颜色取自系统强调色，所以是琥珀色）。
  * 根因是点完焦点留在按钮上没走；而本插件**没有键盘聚焦按钮的路**
  * （Tab 被「切分类」占了），那圈环只有"鼠标点完的残留"这一种来源。
+ *
+ * ⚠️ 09-18 后这句话要补半句：设置面板**确实**有了键盘路，但它是**虚拟光标**（`←→↑↓`
+ * 挪 `.cur`），**不调 `focus()`** —— 真去 `focus()` 就会把这条刚掐掉的 UA 环请回来。
+ * 所以「UA 环只有鼠标残留」这个结论仍然成立，只是理由从"没有路"变成了"路不碰 DOM 焦点"。
  */
 test('★ 按钮的 UA 焦点环已掐掉（base.css 的 button:focus）', () => {
   const base = readFileSync(fileURLToPath(new URL('../src/styles/base.css', import.meta.url)), 'utf8')
@@ -227,16 +231,19 @@ test('★ 设置面板：按控件类型分三段（段内短→长），开关�
  * 收之前散着 **4 / 5 / 6 / 7 / 8 / 10** 六个值 —— 每加一个小控件就顺手挑一个数，
  * 同一屏里"行 6、行尾按钮 5、确认框按钮 7、确认框卡片 10"谁也说不清为什么不一样。
  *
- * 这里锁两件事：
+ * 这里锁三件事：
  *   1. 样式里**只允许** `var(--radius-sm|md|pill)` 和 `50%`（正圆：色点、开关圆钮，
  *      那是尺寸决定的，不进阶梯）、`0`。再出现 5 / 6 / 7 / 10 就是回退。
- *   2. 旧的 `--radius-row`（6px 那档）**不能复活** —— 它已经从 base.css 删掉了，
+ *   2. **`inherit` 放行**，但它不是"第四档"：那是 `.cur::after`（键盘光标那圈淡晕）
+ *      在说"我跟主人同一个形状"—— 不写死数值，主人是胶囊它就是胶囊、是正圆它就是正圆。
+ *      写死一个数反而会变成"药丸外头套个方框"。
+ *   3. 旧的 `--radius-row`（6px 那档）**不能复活** —— 它已经从 base.css 删掉了，
  *      样式里但凡还留着一处引用，那个元素的圆角会静默变成 0（方角），不报错、不显眼。
  */
 test('★ 圆角只有三档（4 / 8 / 999）：不该再有 5 / 6 / 7 / 10', () => {
   const literals = [...css.matchAll(/border-radius:\s*([^;}]+)/g)].map((m) => m[1].trim())
   assert.ok(literals.length > 5, '一条圆角都没抽到 —— 正则或样式表结构变了')
-  const stray = literals.filter((v) => !/^(var\(--radius-(sm|md|pill)\)|50%|0)$/.test(v))
+  const stray = literals.filter((v) => !/^(var\(--radius-(sm|md|pill)\)|50%|0|inherit)$/.test(v))
   assert.deepEqual(stray, [], `出现了三档之外的圆角：${stray.join(' / ')}`)
   assert.ok(!css.includes('--radius-row'), '还引用着已删掉的 --radius-row（那处会静默变方角）')
 })
@@ -332,11 +339,23 @@ test('★ 行尾按钮：选中行跟 hover 一样出按钮，标签同步让位
   assert.ok(show, '.row.on .acts 没了 —— 键盘选中的行又不显示按钮了')
   assert.match(show[1], /opacity:\s*1/, '选中行没有把按钮放出来')
 
-  const fade = css.match(
-    /\.row:hover \.tail-acts \.tag,\s*\.row\.on \.tail-acts \.tag,\s*\.row:hover \.tail-acts \.num,\s*\.row\.on \.tail-acts \.num\s*\{([^}]*)\}/
-  )
-  assert.ok(fade, '选中行的标签 / 序号没写让位 —— 会跟按钮叠在同一格上')
-  assert.match(fade[1], /opacity:\s*0/, '让位那条不是 opacity: 0')
+  /*
+   * 让位那一组：`.tag` / `.num` / `.src` 三样都得在。
+   *
+   * ⚠️ **别按固定顺序拼成一整条正则** —— 每给行尾加一样内容（09-18 加了「来源」）都会先红一次，
+   *    而红的原因跟"让位到底有没有生效"半点关系没有，纯属噪声。
+   *    这里改成"把这一组整个取出来、再逐样查在不在"：加东西不红，**删东西照样红**。
+   */
+  const fade = css.match(/(\.row:hover \.tail-acts \.tag[\s\S]*?)\{([^}]*)\}/)
+  assert.ok(fade, '让位那一组没了 —— 会跟两枚按钮叠在同一格上')
+  for (const cls of ['tag', 'num', 'src']) {
+    assert.ok(
+      fade[1].includes(`.tail-acts .${cls}`),
+      `行尾的 .${cls} 不在让位那一组里 —— 鼠标划过 / 选中时会跟两枚按钮叠字`
+    )
+  }
+  assert.match(fade[1], /\.row\.on \.tail-acts \.tag/, '让位只跟 hover 走 —— 键盘选中的行会叠字')
+  assert.match(fade[2], /opacity:\s*0/, '让位那条不是 opacity: 0')
 })
 
 /*
@@ -375,5 +394,287 @@ test('★ 底色档的左竖条：只有 tint 档有、靠 opacity 跟着 120ms 
     /position:\s*relative/,
     '.row 丢了 position: relative —— 竖条会跑到面板最左边去'
   )
+})
+
+/*
+ * ★ 键盘光标 `.cur`（09-18 设置面板键盘化）：**必须跟「选中」`.on` 是两套画法**。
+ *
+ * 两者会同时出现 —— 打开面板时光标就落在第一行的当前值上，所以"光标停在一个已选中
+ * 的控件上"是常态。要是 `.cur` 也用强调色，界面上就出现两个同样的强调色标记，
+ * 分不出哪个是"光标"、哪个是"选中值"。
+ *
+ * 锁六件事：
+ *   1. `.cur` 的**主线**取的是**中性灰 `--cur-line`**，不是 `--accent`；
+ *   2. **主线**走 `outline` 通道，不是 box-shadow —— `.on` 那几条光晕（药丸 / 色点 /
+ *      「默认」）本来就全写在 box-shadow 里，写在**同一个盒子**上就得跟每一条各拼一次，
+ *      拼漏一处就是"选中时看不见光标"；
+ *   3. 外面那圈**淡晕**（v3，老大从四个方案里挑的"A"）挂在 `::after` 上 —— 伪元素是
+ *      **另一个盒子**，它的 box-shadow 跟元素的互不干扰，这才是"要两层又不撞通道"的写法；
+ *   4. 开关行靠自己的 `border-radius` 让环变弯，**不许**给 `.opt` 单开一条光标规则；
+ *   5. 色点那条把 `outline-offset` 让大一点，别跟 `.dot.on` 那圈灰光晕叠在一起，
+ *      **而且色点要把晕掐掉**（14px 点 + 12px 间距，算术上塞不下）；
+ *   6. 模板里真接上了（`isCur(...)`）—— 样式写了但没挂上去，等于没做。
+ *      ⚠️ 行名对不对由 `tests/panel.test.ts` 管，这里只管"有没有挂"。
+ */
+test('★ 键盘光标 .cur：中性两层环（主线 outline + 伪元素淡晕），跟「选中」.on 分得开', () => {
+  const cur = css.match(/^\.cur\s*\{([^}]*)\}/m)
+  assert.ok(cur, '找不到 .cur 规则 —— 面板的键盘光标没了')
+  assert.match(
+    cur[1],
+    /outline:\s*[\d.]+px\s+solid\s+var\(--cur-line\)/,
+    '.cur 的主线不再是中性灰 --cur-line'
+  )
+  assert.doesNotMatch(cur[1], /--accent/, '.cur 用了强调色 —— 会跟「选中」撞成同一个意思')
+  assert.doesNotMatch(
+    cur[1],
+    /box-shadow/,
+    '.cur 的 box-shadow 会被 .on 的光晕盖掉 —— 主线只能走 outline'
+  )
+  assert.match(cur[1], /outline-offset/, '.cur 没有 outline-offset —— 环会贴着药丸边')
+  assert.match(
+    cur[1],
+    /position:\s*relative/,
+    '.cur 没有 position: relative —— 那层晕（::after）没有定位父级，会飞到别处'
+  )
+
+  // 淡晕：走伪元素（另一个盒子），不跟 .on 抢通道
+  const halo = css.match(/^\.cur::after\s*\{([^}]*)\}/m)
+  assert.ok(halo, '找不到 .cur::after —— 那圈淡晕没了')
+  assert.match(
+    halo[1],
+    /outline:\s*[\d.]+px\s+solid\s+var\(--cur-halo\)/,
+    '.cur::after 没用 --cur-halo 画那圈晕'
+  )
+  assert.match(halo[1], /outline-offset/, '.cur::after 没有 outline-offset —— 晕会压在主线底下')
+  assert.match(
+    halo[1],
+    /border-radius:\s*inherit/,
+    '.cur::after 没继承圆角 —— 晕会变成另一个形状（药丸外头套个方框）'
+  )
+  assert.match(halo[1], /pointer-events:\s*none/, '.cur::after 会挡住鼠标')
+  assert.doesNotMatch(halo[1], /--accent/, '那圈晕用了强调色 —— 跟「选中」撞成同一个意思')
+
+  /*
+   * ★ 下面两条是**真机返工换来的**（老大：「描边和晕为什么没有贴一起，中间有白色底。
+   *   是描边的圆角和晕的圆角不一样吗？」—— 是的）。
+   *
+   * 病根：`inset: -4px` 把盒子往外推了 4px，而 `border-radius: inherit` 拿到的是元素自己的
+   * **8px**，那一圈正确的半径是 **12px** ⇒ 半径偏小 ⇒ 角的弧"少切一块" ⇒ 晕在**四个角上**
+   * 鼓到主线外面，中间露出一道背景色。（指纹：直边 0 缝，角上约 2px 缝。）
+   *
+   * 修法：盒子**跟元素完全重合**（`inset: 0`），圆角于是天然正确；往外推的活交给
+   * `outline-offset`（它沿圆角往外扩，半径自己 +offset）。所以这两条必须**一起**锁死 ——
+   * 谁把 inset 改回负数，这个 bug 立刻回来。
+   */
+  assert.match(
+    halo[1],
+    /inset:\s*0\s*;/,
+    '.cur::after 的盒子没跟元素重合（inset 必须 0）—— 一旦外推，border-radius: inherit 就错了，四个角会露背景色'
+  )
+  assert.doesNotMatch(
+    halo[1],
+    /box-shadow/,
+    '.cur::after 又用回 box-shadow —— 那是"另一个盒子"，半径得自己算，就是四个角露缝那个坑'
+  )
+
+  /*
+   * ★ 开关行的光标 = **同一圈环，只是把方角改成圆角**（09-18 晚 v2）。
+   *   老大原话：「我只是觉得之前的方形不好看，你把四角变成弧形就可以了。
+   *   就套环，只是别用长方形。」⇒ 他要的是**统一**：光标全站只有"一圈环"这一种说法，
+   *   所以**不许**给 `.opt` 单开一条 `.opt.cur`（中间那版"改铺淡底"的写法已被否决）。
+   *   环要变圆，靠的是 `.opt` 自己有个 `border-radius` —— `outline` 会跟着它弯。
+   */
+  const opt = css.match(/\.opt\s*\{([^}]*)\}/)
+  assert.ok(opt, '找不到 .opt 规则')
+  /*
+   * ★ 这个圆角**只用来塑形那圈环**（`.opt` 自己没有背景色，值页面上看不见）。
+   *   必须取 `--radius-sm`(4)，环的外轮廓才 = **8px**，跟列表项 `.row.on` 的描框对齐。
+   *
+   *   算式：环的外轮廓 = 元素圆角 + `outline-offset` 2 + 线宽 2 = 圆角 + 4 ⇒ 圆角必须 4。
+   *   （列表项那边是 8px 圆角 + `inset 1.5px` 贴边，外轮廓就是 8px。）
+   *
+   *   ⚠️ 改回 `--radius-md`(8) 的话，环的外轮廓会变成 12px —— 比列表项圆一整圈。
+   *      老大 09-18 真机同一处第三次返工就是这一条：
+   *      「你设置里面这个环的角弧度，有没有参考列表项的描框的角的弧度？」
+   */
+  assert.match(
+    opt[1],
+    /border-radius:\s*var\(--radius-sm\)/,
+    '.opt 的圆角不是 --radius-sm —— 环的外轮廓会变成 圆角+4，比列表项描框（8px）圆一整圈'
+  )
+  assert.doesNotMatch(
+    css,
+    /\.opt\.cur\s*\{/,
+    '开关行又给光标单开了一条规则 —— 光标全站只该有一圈环（见 `.cur` 那段注释）'
+  )
+
+  // 色点：主线要往外让，别跟 .dot.on 那圈灰光晕叠一起
+  const dot = css.match(/\.root \.sheet \.dot\.cur\s*\{([^}]*)\}/)
+  assert.ok(dot, '色点的 .cur 偏移没了 —— 环会压在那圈灰光晕上')
+  const offset = Number(cur[1].match(/outline-offset:\s*([\d.]+)px/)?.[1])
+  const pushed = Number(dot[1].match(/outline-offset:\s*([\d.]+)px/)?.[1])
+  assert.ok(
+    pushed > offset,
+    `色点的 outline-offset(${pushed}px) 没有比通例(${offset}px)更大 —— 会跟光晕叠在一起`
+  )
+  /*
+   * ⚠️ 色点**只有线、没有晕**：14px 的点只隔 12px，而且外面本来就挂着"选中环"
+   *    （实心档到 5px）—— 再叠 3px 的晕就是 7 + 3.5 > 12，算术上顶到隔壁那颗去了。
+   */
+  const dotHalo = css.match(/\.root \.sheet \.dot\.cur::after\s*\{([^}]*)\}/)
+  assert.ok(dotHalo, '色点的 ::after 没写 —— 那圈晕会顶到隔壁色点上')
+  assert.match(dotHalo[1], /content:\s*none/, '色点的 ::after 没被 content: none 关掉')
+
+  // 模板接线：面板里真的挂了 isCur
+  assert.match(template, /:\s*class="\{[^"]*cur:\s*isCur\(/, '模板里没有一处挂上 .cur —— 光标画不出来')
+})
+
+/*
+ * ★ 键盘光标那两个变量（09-18 v3，base.css）：**深浅两块都得有**。
+ *
+ * `.cur` 取的是 `var(--cur-line)` / `var(--cur-halo)`，而 `var()` 取不到值**不报错** ——
+ * outline-color 会退成 `currentColor`（跟文字一个色，环糊进字里），那圈晕直接整条消失。
+ * 深色主题漏写更阴：它会**继承浅色那块的值**（42% 黑），在深底上基本看不见。
+ * ⇒ 跟 `--radius-*` / `--accent-rgb` 一样，把"齐全"钉住。
+ */
+test('★ base.css 的 --cur-line / --cur-halo：浅色与深色两块都齐全', () => {
+  const base = readFileSync(fileURLToPath(new URL('../src/styles/base.css', import.meta.url)), 'utf8')
+  const dark = base.match(/:root\[data-theme='dark'\]\s*\{([^}]*)\}/)
+  assert.ok(dark, "base.css 里找不到 :root[data-theme='dark'] 块 —— 正则或结构变了")
+  for (const name of ['--cur-line', '--cur-halo']) {
+    assert.match(base, new RegExp(`${name}:`), `base.css 里没有 ${name} 的兜底`)
+    assert.match(
+      dark[1],
+      new RegExp(`${name}:`),
+      `深色块里没有 ${name} —— 会继承浅色那版，深底上看不见`
+    )
+  }
+})
+
+/*
+ * ★ 面板里「选中」那颗的效果**跟随 `mark` 三档**（老大 09-18 真机提的）。
+ *
+ * 跟 `.row.on` / 底栏 `.clr:hover` 是同一套语汇：描框（inset 一圈）/ 淡底（accent-soft）/
+ * 实心（铺满 + 反白）。来由是"同一屏里只能有一句话" ——
+ * 行是描框、面板里却铺着淡底，等于调了「选中项」只统一了一半。
+ *
+ * 锁五件事：
+ *   1. 兜底那条还是淡底（`mark` 还没读出来的那一瞬不能没样子）；
+ *   2. 描框档**既不铺色**（`background: none`，不然描框 + 淡底叠成两层）又套 inset 强调色边；
+ *   3. 实心档铺 `--accent`、字取 `--row-on-tx`（跟行反白同源）；
+ *   4. 旧的那圈 **3px 同色光晕已经删干净** —— 留着会让描框档看着像两层环；
+ *   5. 色点那两条必须带 `:not(.auto)` —— 「默认」那颗混着 `.dot` 类，误伤它就变成一颗圆环。
+ */
+test('★ 面板「选中」的效果跟随 mark 三档（跟行 / 底栏同一套语汇）', () => {
+  const base = css.match(/\.chip\.on,\s*\.dot\.auto\.on\s*\{([^}]*)\}/)
+  assert.ok(base, '找不到 `.chip.on, .dot.auto.on` 兜底那条 —— 面板的选中效果没了')
+  assert.match(base[1], /background:\s*var\(--accent-soft\)/, '兜底那条不再是淡底')
+
+  const border = css.match(
+    /\.root\.mark-border \.chip\.on,\s*\.root\.mark-border \.dot\.auto\.on\s*\{([^}]*)\}/
+  )
+  assert.ok(border, '描框档没有规则 —— 面板里的选中还停在淡底')
+  assert.match(border[1], /background:\s*none/, '描框档还在铺色 —— 描框 + 淡底会叠成两层')
+  assert.match(border[1], /inset 0 0 0 1\.5px var\(--accent\)/, '描框档没有那圈 inset 强调色边')
+
+  const solid = css.match(
+    /\.root\.mark-solid \.chip\.on,\s*\.root\.mark-solid \.dot\.auto\.on\s*\{([^}]*)\}/
+  )
+  assert.ok(solid, '实心档没有规则 —— 面板里的选中没跟着走')
+  assert.match(solid[1], /background:\s*var\(--accent\)/, '实心档没有铺满强调色')
+  assert.match(solid[1], /color:\s*var\(--row-on-tx\)/, '实心档没有反白')
+
+  // 旧光晕必须彻底消失
+  assert.doesNotMatch(
+    css,
+    /box-shadow:\s*0 0 0 3px var\(--accent-soft\)/,
+    '旧的 3px 同色光晕还在 —— 描框档会看成两层环'
+  )
+
+  // 色点：三档靠"环"的粗细 / 颜色表达，且都得排掉 `.auto`
+  assert.match(
+    css,
+    /\.root\.mark-border \.dot:not\(\.auto\)\.on\s*\{[^}]*var\(--accent\)/,
+    '描框档的色点环没换成强调色'
+  )
+  assert.match(
+    css,
+    /\.root\.mark-solid \.dot:not\(\.auto\)\.on\s*\{[^}]*var\(--accent\)/,
+    '实心档的色点环没换成强调色'
+  )
+  assert.match(css, /\.dot\.on\s*\{[^}]*127, 127, 127/, '淡底档那条中性灰环丢了 —— 它是这一档的兜底')
+})
+
+/*
+ * ★ 搜索命中的高亮（09-18）。
+ *
+ * 两条必须同时成立的红线：
+ *   ① **不许 `v-html`** —— 剪贴板内容是任意来的，从网页复制的东西本身就是一段 HTML，
+ *      塞进去就是把它渲染出来。渲染走 `row.seg` 片段数组（`v-for` + `:class="{ hl: s.hit }"`）。
+ *   ② **实心档必须单独一条** —— 那一档整行铺的就是强调色，命中再铺一层强调色等于没标。
+ *
+ * 另外高亮底必须走 `--accent-rgb` 变量取色：强调色可能是宿主注入的，
+ * 硬写一个色号会在用户换主题色时脱钩。
+ */
+test('★ 命中高亮：片段渲染（零 v-html）、靠变量取色、实心档单独定义', () => {
+  // 注释里会提到 v-html（"别用它"），所以先把 HTML 注释剥掉再查
+  const bare = template.replace(/<!--[\s\S]*?-->/g, '')
+  assert.doesNotMatch(bare, /\bv-html\b/, '模板里出现了 v-html —— 剪贴板内容不可信，等于注入面')
+
+  assert.match(template, /v-for="\(s, k\) in row\.seg"/, '模板没按片段渲染 —— 高亮一个字都画不出来')
+  assert.match(template, /class="\{ hl: s\.hit \}"/, '片段没接上 .hl')
+
+  assert.match(css, /^\.t \.hl\s*\{/m, '找不到命中高亮的底（.t .hl）')
+  assert.match(css, /rgba\(var\(--accent-rgb\)/, '高亮底没走 --accent-rgb —— 宿主换主题色时会脱钩')
+  assert.match(
+    css,
+    /\.root\.mark-solid \.row\.on \.hl\s*\{[^}]*--on-accent-rgb/,
+    '实心档没单独定义 .hl —— 那一档整行就是强调色，高亮会整个消失'
+  )
+})
+
+/*
+ * ★ `--accent-rgb`（强调色**自身**的 rgb）三处缺一不可：
+ *   `base.css` 的兜底、`accent.ts` 算出来、`theme.ts` 写进 CSS 变量。
+ *
+ * 少了任意一处都**不报错** —— `rgba(var(--accent-rgb), .26)` 整条失效（值解析不出来），
+ * 表现只是"高亮看起来没生效"，查起来很费劲。所以机械扫一遍。
+ */
+test('★ --accent-rgb：base.css / accent.ts / theme.ts 三处齐全', () => {
+  const read = (p: string): string =>
+    readFileSync(fileURLToPath(new URL(`../src/${p}`, import.meta.url)), 'utf8')
+
+  assert.match(
+    read('styles/base.css'),
+    /--accent-rgb:\s*\d+,\s*\d+,\s*\d+/,
+    'base.css 没有 --accent-rgb 兜底'
+  )
+  assert.match(read('lib/accent.ts'), /accentRgb:/, 'accent.ts 没把强调色的 rgb 算出来')
+  assert.match(
+    read('lib/theme.ts'),
+    /setProperty\('--accent-rgb'/,
+    'theme.ts 没把 --accent-rgb 写进 CSS 变量 —— 非默认强调色下高亮会整条失效'
+  )
+})
+
+/*
+ * ★ 行尾「来源」（09-18）：`tailSource` 打开时行里多显示一格应用名。
+ *
+ * 它跟 `.num` 是同一档（淡淡的纯文字），所以两件事都得跟 `.num` 完全一致：
+ *   ① 按钮浮现时**一起让位**（它们和两枚按钮 absolute 叠在同一格里）；
+ *   ② 实心档**一起反白**（`--tx-3` 的灰字铺在强调色上就是一团看不见的灰）。
+ * 少任何一条，都只在"特定档位 + 特定鼠标位置"下才看得见，很难发现。
+ */
+test('★ 行尾来源 .src：跟 .num 同一档，一起反白、一起让位', () => {
+  assert.match(css, /^\.src\s*\{/m, '找不到 .src 规则')
+
+  assert.match(
+    css,
+    /\.root\.mark-solid \.row\.on \.num,\s*\.root\.mark-solid \.row\.on \.src\s*\{/,
+    '.src 没跟 .num 一起反白 —— 实心档上会变成看不见的灰字'
+  )
+  // 让位那一组由上面「行尾按钮」那条逐样验（tag / num / src），这里只查模板接线
+  assert.match(template, /settings\.tailSource && row\.source/, '模板没接 tailSource 开关')
+  assert.match(template, /class="src"/, '模板里没挂 .src')
 })
 

@@ -83,6 +83,7 @@ test('多余的键一律丢掉，不往界面里带', () => {
     'peek',
     'tailActs',
     'tailIndex',
+    'tailSource',
     'tailType'
   ])
 })
@@ -102,6 +103,8 @@ test('老文档缺字段时，默认 true 的项要补 true（不能因为 undef
   assert.equal(old.tailActs, true)
   // 序号是默认 false 的那一类，缺字段就该是关的
   assert.equal(old.tailIndex, false)
+  // 来源同理：老文档里没这个键 ⇒ 关（不能因为"加了个设置"就给别人多显示一列）
+  assert.equal(old.tailSource, false)
 })
 
 test('这四个新项：显式写的值要认', () => {

@@ -36,6 +36,8 @@ export type PasteAction = `paste${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`
 export type KeyAction =
   | 'up'
   | 'down'
+  | 'left'
+  | 'right'
   | 'enter'
   | 'escape'
   | 'remove'
@@ -135,6 +137,21 @@ export function resolveKey(e: KeyboardEvent): KeyAction | null {
       return 'up'
     case 'ArrowDown':
       return 'down'
+    /*
+     * ←→ **只有设置面板用**（09-18 加的）：面板里「换行」是 ↑↓、「行内换位置」是 ←→。
+     *
+     * 列表里左右没有含义，所以它们落到全局那个 switch 里是空分支 —— 这是有意的，
+     * 不是漏了。之所以还是写进这张表，是为了守住"键位只有这一处说明"：
+     * 哪天有人翻键位，在这里就能看到 ←→ 已经被面板领走了。
+     *
+     * 宿主那六个转发键（←→↑↓EnterTab）本来就含 ←→，所以焦点在搜索框里也收得到；
+     * 但**面板里按方向键时会先把焦点要回插件**（跟列表的 ↑↓ 同一个做法），
+     * 免得搜索框那边同时在动光标。
+     */
+    case 'ArrowLeft':
+      return 'left'
+    case 'ArrowRight':
+      return 'right'
     case 'Enter':
       return 'enter'
     case 'Escape':

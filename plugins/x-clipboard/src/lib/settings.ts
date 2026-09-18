@@ -75,6 +75,16 @@ export interface Settings {
    * 所以它跟快捷键取的是同一份渲染列表，别另算。
    */
   tailIndex: boolean
+  /**
+   * 行尾常驻显示**来源应用**（VSCode / Chrome / IDEA…，短名表在 `source.ts`）。
+   *
+   * 默认关：实测那 786 条里前两个应用占了 88%，常驻显示就是两百多行重复同样两个词。
+   * 数据本身很干净（覆盖率 100%、无脏来源），所以这个开关纯粹是"要不要看"的问题，
+   * 不是"能不能显示"——摆出来让需要的人自己打开。
+   *
+   * 跟 `tailType` / `tailIndex` 是**多选**关系；三样都不开就是行尾什么都没有。
+   */
+  tailSource: boolean
   /** 鼠标划过时，行尾浮现「收藏 / 删除」两枚按钮（鼠标唯一的操作入口） */
   tailActs: boolean
 }
@@ -130,6 +140,8 @@ export const DEFAULT_SETTINGS: Settings = {
   tailType: true,
   // 序号默认关：不按 ⌘N 的人只会觉得行尾多了一列没用的数字
   tailIndex: false,
+  // 来源默认关：88% 是同样两个应用，常驻反而是噪声（理由见上面 tailSource 的说明）
+  tailSource: false,
   // 默认开：这是鼠标唯一的操作入口，关掉之后收藏/删除就只剩键盘了
   tailActs: true
 }
@@ -153,6 +165,7 @@ export function normalizeSettings(raw: unknown): Settings {
     confirmDelete: src.confirmDelete !== false,
     tailType: src.tailType !== false,
     tailIndex: src.tailIndex === true,
+    tailSource: src.tailSource === true,
     tailActs: src.tailActs !== false
   }
 }

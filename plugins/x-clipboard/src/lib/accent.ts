@@ -47,6 +47,8 @@ export interface AccentDerived {
   text: string
   /** 同上，`r, g, b` 形式，方便在 CSS 里做半透明底（缩略图底、行尾按钮的 hover 底） */
   rgb: string
+  /** 强调色**自身**的 `r, g, b` —— 搜索命中那层底要用它调透明度 */
+  accentRgb: string
   /** 强调色 13% 的淡底（当前行） */
   soft: string
 }
@@ -58,6 +60,7 @@ export function deriveFrom(hex: string): AccentDerived {
   return {
     text: light ? DARK_TEXT : LIGHT_TEXT,
     rgb: light ? DARK_TEXT_RGB : LIGHT_TEXT_RGB,
+    accentRgb: rgb.join(', '),
     soft: `rgba(${rgb.join(', ')}, ${SOFT_ALPHA})`
   }
 }

@@ -59,6 +59,8 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: .15s; }
 .bar-bg { flex: 1; height: 8px; border-radius: 5px; background: var(--card); overflow: hidden; }
 .bar-fill { height: 100%; width: 0; background: var(--accent); border-radius: 5px; transition: width .3s; }
 .pct { color: var(--muted); width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+.eta { font-size: 11px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; padding: 0 2px; }
+.eta:empty { display: none; }
 .status { color: var(--muted); }
 
 .result { display: flex; gap: 8px; }
@@ -71,8 +73,51 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: .15s; }
 .tab { background: transparent; border: none; color: var(--muted); padding: 3px 8px; }
 .tab.active { color: var(--accent); font-weight: 600; }
 
-.panel { min-height: 76px; max-height: 140px; overflow: auto; }
+.panel { min-height: 76px; max-height: 156px; overflow: auto; }
 .hist { list-style: none; margin: 0; padding: 0; }
+.hist-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 2px 5px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-solid, #ffffff);
+  z-index: 3;
+}
+@media (prefers-color-scheme: dark) {
+  .hist-toolbar { background: #252930; }
+}
+.hist-filters {
+  display: flex;
+  gap: 4px;
+  background: var(--card);
+  border-radius: 6px;
+  padding: 2px;
+}
+.hist-filter {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.hist-filter:hover { color: var(--fg); }
+.hist-filter.active {
+  background: var(--bg-solid, #ffffff);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  .hist-filter.active {
+    background: #333842;
+    color: var(--accent);
+  }
+}
 .hist-header {
   display: flex;
   align-items: center;
@@ -83,7 +128,7 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: .15s; }
   border-bottom: 1px solid var(--bd);
   background: var(--bg-solid, #ffffff);
   position: sticky;
-  top: 0;
+  top: 27px;
   z-index: 2;
 }
 @media (prefers-color-scheme: dark) {
@@ -200,6 +245,9 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: .15s; }
   max-width: 320px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
+#alertModal .modal-box {
+  max-width: 380px;
+}
 @media (prefers-color-scheme: dark) {
   .modal-box {
     background: #252930;
@@ -216,3 +264,46 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: .15s; }
   border-radius: 6px;
 }
 .danger-btn:hover { background: #d0373d; }
+
+/* ---------- 上传 / 下载 模式切换 ---------- */
+.modes { display: flex; gap: 4px; background: var(--card); border-radius: 8px; padding: 2px; }
+.mode {
+  background: transparent; border: none; color: var(--muted);
+  padding: 3px 12px; border-radius: 6px; font-size: 12px;
+}
+.mode.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+#upBox, #downBox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dl-fill {
+  background: #1d5fd0;
+}
+
+/* ---------- 下载面板 ---------- */
+.dl-link-row { margin-bottom: 0; }
+.dl-info { border: 1px solid var(--bd); border-radius: 8px; padding: 6px 8px; margin-bottom: 8px; }
+.dl-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; font-weight: 600; border-bottom: 1px solid var(--bd);
+  padding-bottom: 4px; margin-bottom: 4px;
+}
+.dl-meta { color: var(--muted); font-weight: 400; font-size: 11px; }
+.dl-info .files { max-height: 96px; }
+.dl-info .files li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 历史里的上传/下载标记 ---------- */
+.badge {
+  flex-shrink: 0; font-size: 10px; line-height: 1.6; padding: 0 5px;
+  border-radius: 4px; margin-right: 6px;
+}
+.badge-up { color: #0b7a3b; background: rgba(11, 122, 59, .12); }
+.badge-dl { color: #1d5fd0; background: rgba(29, 95, 208, .12); }
+.col-action { width: auto; min-width: 42px; display: flex; justify-content: flex-end; gap: 4px; }
+.btn-open {
+  border: none; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; font-size: 11px; transition: all .15s;
+}
+.btn-open:hover { color: var(--accent); background: var(--card); }

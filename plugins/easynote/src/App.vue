@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import Home from './Note/Home.vue'
 import StickyNote from './Note/StickyNote.vue'
 import EdgeTab from './Note/EdgeTab.vue'
-import { openStickyWindow, isStandaloneSupported, isStickyNoteOpen, initHostBridge } from './Note/host'
+import {
+  openStickyWindow,
+  isStandaloneSupported,
+  isStickyNoteOpen,
+  initHostBridge,
+  MAX_STICKIES
+} from './Note/host'
 import { useNotes } from './Note/composables/useNotes'
 
 const winType = ref<'main' | 'detach' | 'browser'>(window.ztools.getWindowType())
@@ -87,18 +94,22 @@ function onBeforeUnload(e: BeforeUnloadEvent) {
 function openSticky(noteId: string | null) {
   loadDraft(noteId)
   if (isStandaloneSupported()) {
-    // 独立窗口模式：创建便利贴窗口，如果失败则回退到嵌入模式
-    const ok = openStickyWindow(noteId)
-    if (!ok) {
-      // createBrowserWindow 失败（如 WPS 环境），回退到主窗口内嵌编辑
-      view.value = 'editor'
+    const result = openStickyWindow(noteId)
+    if (result === 'created' || result === 'focused') {
+      // 新开窗口或聚焦已有窗口：主窗口照例隐藏（聚焦场景主窗口本就多为隐藏态）
+      try {
+        window.ztools.hideMainWindow()
+      } catch {
+        /* ignore */
+      }
       return
     }
-    try {
-      window.ztools.hideMainWindow()
-    } catch {
-      /* ignore */
+    if (result === 'limit') {
+      ElMessage.warning(`最多同时打开 ${MAX_STICKIES} 张便利贴`)
+      return
     }
+    // createBrowserWindow 失败等异常，回退到主窗口内嵌编辑
+    view.value = 'editor'
   } else {
     // dev 模式：主窗口内切换到编辑视图
     view.value = 'editor'

@@ -281,12 +281,68 @@ function pickFolders() {
   return Array.isArray(res) ? res : []
 }
 
+// ---------- 资源管理器打开 ----------
+
+// 判断路径类型，返回 { path, isFile }；不存在/为空抛 Error
+// 与 normalizeTarget 的区别：不把文件折算成父目录——「在资源管理器中显示」需要保留文件本体走 /select
+function statPath(p) {
+  let target = String(p || '').trim().replace(/^"(.*)"$/, '$1')
+  if (!target) throw new Error('路径为空')
+  let st
+  try {
+    st = fs.statSync(target)
+  } catch (e) {
+    throw new Error('路径不存在: ' + target)
+  }
+  return { path: path.resolve(target), isFile: st.isFile() }
+}
+
+// 用系统文件管理器打开目标：
+// - 目录 → 直接打开；文件 → 资源管理器/Finder 中定位并选中该文件
+// 平台实现：win32 = explorer（/select）；darwin = open（文件用 -R）；linux = xdg-open（文件退化打开父目录）
+// 坑 1：explorer.exe 打开成功时退出码也常为 1（委托给已有进程后立即返回），不能按退出码报错
+// 坑 2：不能加 windowsHide: true —— STARTUPINFO 的 SW_HIDE 对 GUI 程序同样生效，
+//       explorer 进程启动了但窗口被藏起来，表现为「点击无反应、无报错」。
+//       故 explorer 用异步 spawn（与 wt.exe 同款方式），错误走系统通知
+function openInFileManager(targetPath) {
+  const { path: target, isFile } = statPath(targetPath)
+
+  if (process.platform === 'win32') {
+    const args = isFile ? ['/select,' + target] : [target]
+    const child = spawn('explorer.exe', args, { detached: true, stdio: 'ignore' })
+    child.on('error', (e) => {
+      try {
+        window.ztools.showNotification('QuickTerm: 打开资源管理器失败 - ' + ((e && e.message) || '未知错误'))
+      } catch (_) {}
+    })
+    child.unref()
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    const args = isFile ? ['-R', target] : [target]
+    const res = spawnSync('open', args, { encoding: 'utf-8', timeout: 10000 })
+    if (res.error) throw new Error('打开 Finder 失败: ' + res.error.message)
+    if (res.status !== 0) {
+      const detail = String(res.stderr || res.stdout || '').trim()
+      throw new Error('打开 Finder 失败: ' + (detail || 'exit code ' + res.status))
+    }
+    return
+  }
+
+  // Linux：xdg-open 无「选中文件」语义，文件退化为打开父目录
+  const res = spawnSync('xdg-open', [isFile ? path.dirname(target) : target], { encoding: 'utf-8' })
+  if (res.error) throw new Error('打开文件管理器失败: ' + res.error.message)
+}
+
 // 通过 window 对象向渲染进程注入能力
 window.services = {
   loadStorage,
   saveStorage,
   normalizeTarget,
+  statPath,
   detectTerminals,
   openInTerminal,
+  openInFileManager,
   pickFolders
 }

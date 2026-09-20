@@ -1,6 +1,6 @@
 {
   "name": "quickterm",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "在终端中打开",
   "type": "module",
   "scripts": {

@@ -18,9 +18,17 @@ export type HostCommand = {
     | 'tab-drag'
     /** 管家 → 标签：吸附边变了（拖动换边后），让标签换边框/圆角方向 */
     | 'side'
+    /** 草稿保存后拿到（或被删重建换了）便签 id，同步给管家做聚焦去重 */
+    | 'note-id'
+    /** 便利贴窗口请求关闭自己：管家判断是否最后一张，决定直接关还是让该窗口自己退出插件 */
+    | 'close-sticky'
+    /** 管家 → 便利贴：确认这是最后一张，由本窗口执行 outPlugin 结束插件（可靠的退出路径） */
+    | 'exit'
   /** collapse 时带上，用于标签窗口显示与高度计算 */
   title?: string
   noteType?: 'note' | 'todo'
+  /** note-id 时带上：本窗口当前编辑的便签 id */
+  noteId?: string
   /** tab-drag 的阶段与光标屏幕坐标 */
   phase?: 'start' | 'move' | 'end'
   x?: number

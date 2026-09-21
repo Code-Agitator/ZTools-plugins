@@ -46,6 +46,9 @@ const emit = defineEmits<{
 const { draft, savedNotes, updateDraft, saveDraft } = useNotes()
 const { settings } = useSettings()
 
+/** 已上报给窗口管家的便签 id：聚焦去重靠管家注册表里的 noteId，草稿保存拿到 id（或被删重建换了 id）时要同步 */
+let reportedNoteId: string | null = draft.value.noteId
+
 /** 内嵌在主窗口里的形态（dev 模式、从列表点进的内容页）没有独立窗口可折叠，不显示最小化 */
 const canCollapse = computed(() => !props.embedded)
 
@@ -59,6 +62,16 @@ onMounted(() => {
   // 标签上的关闭按钮会转到这里：走下面原有的 onClose（含未保存确认）
   getBridge()?.onCmd((msg) => {
     if (msg?.type === 'close-request') onClose()
+    // 管家确认这是最后一张便利贴（且主窗口不可见）：由本窗口执行 outPlugin 结束插件——
+    // 这是从单窗口时代沿用下来的可靠退出路径，主窗口侧调用在部分环境结束不掉插件进程
+    if (msg?.type === 'exit') {
+      try {
+        window.ztools.outPlugin(true)
+      } catch {
+        /* ignore */
+      }
+      window.close()
+    }
   })
 })
 
@@ -74,7 +87,12 @@ async function onSave() {
     if (!picked) return
     type = picked
   }
-  saveDraft(type)
+  const saved = saveDraft(type)
+  // 独立便利贴窗口：把保存后拿到的便签 id 同步给管家，之后从主页再打开同一张才能聚焦到本窗口
+  if (saved && !props.embedded && saved.id !== reportedNoteId) {
+    reportedNoteId = saved.id
+    getBridge()?.toHost({ type: 'note-id', noteId: saved.id })
+  }
   ElMessage.success('已保存')
   emit('saved')
 }
@@ -144,16 +162,19 @@ function onClose() {
   if (isDirty && !confirm('当前便签有未保存的修改，确定要关闭吗？')) {
     return
   }
-  // embedded（主窗口内）：返回 Home；独立便利贴窗口：关闭并结束插件进程
+  // embedded（主窗口内）：返回 Home；独立便利贴窗口：报备给管家后关闭。
+  // 管家判断是否最后一张——最后一张会让本窗口自己 outPlugin（可靠退出路径），其余直接代关。
   if (props.embedded) {
     emit('back')
   } else {
-    try {
-      window.ztools.outPlugin(true)
-    } catch {
-      /* ignore */
+    const bridge = getBridge()
+    if (bridge) {
+      bridge.toHost({ type: 'close-sticky' })
+      // 兜底：管家没接住（消息丢失等）时至少把窗口关掉，进程收尾交给看门狗
+      setTimeout(() => window.close(), 400)
+    } else {
+      window.close()
     }
-    window.close()
   }
 }
 </script>

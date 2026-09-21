@@ -2,7 +2,6 @@
 import { onMounted, ref } from 'vue'
 import FolderList from './components/FolderList.vue'
 import { folders, settings, displayName } from './store'
-import type { TerminalType } from './types'
 
 // open-folder 触发时不渲染 UI（秒开终端后立即退出插件），panel/search 解析失败时显示面板
 const showPanel = ref(false)
@@ -21,24 +20,39 @@ function extractPath(payload: unknown): string {
   return String(item ?? '').trim()
 }
 
-// 粘贴/拖入文件夹触发：用默认终端秒开，成功后自动退出插件
-function openFromPayload(payload: unknown) {
-  const target = extractPath(payload)
-  if (target) openAndExit(target)
-}
-
-// 打开目标目录并退出插件；terminal 传 undefined 时走默认终端设置/自动探测
-// 返回实际使用的终端类型，失败返回 null
-function openAndExit(target: string, terminal?: string): TerminalType | null {
+// 统一「执行打开动作后退出插件」：失败走系统通知，退出不因失败阻断
+function exitAfter(open: () => unknown) {
   try {
-    const res = window.services.openInTerminal(target, terminal || settings.value.defaultTerminal || 'auto')
-    return res.type
+    open()
   } catch (e) {
     window.ztools.showNotification('QuickTerm: ' + ((e as Error).message || '打开失败'))
-    return null
   } finally {
     window.ztools.outPlugin()
   }
+}
+
+// 粘贴/拖入触发：kind 决定打开方式（终端 / 资源管理器）
+function openFromPayload(payload: unknown, kind: 'terminal' | 'explorer' = 'terminal') {
+  const target = extractPath(payload)
+  if (!target) return
+  if (kind === 'explorer') openExplorerAndExit(target)
+  else openAndExit(target)
+}
+
+// 在终端打开目标目录并退出插件；terminal 传 undefined 时走默认终端设置/自动探测
+function openAndExit(target: string, terminal?: string): void {
+  exitAfter(() => window.services.openInTerminal(target, terminal || settings.value.defaultTerminal || 'auto'))
+}
+
+// 在系统资源管理器中打开目标并退出插件（文件则选中该文件）
+function openExplorerAndExit(target: string): void {
+  exitAfter(() => {
+    // preload 旧版（ZTools 未完全重启）时显式报错，避免静默退出
+    if (typeof window.services.openInFileManager !== 'function') {
+      throw new Error('服务为旧版本，请完全退出 ZTools 后重新启动再试')
+    }
+    return window.services.openInFileManager(target)
+  })
 }
 
 // 判断文本是否为路径形态（含 \ / 或盘符前缀）
@@ -85,13 +99,15 @@ interface QtPushItem {
   text: string
   _qtPath?: string
   _qtTerminal?: string
+  _qtKind?: 'terminal' | 'explorer'
 }
 
 const MAX_PUSH_RESULTS = 10
 
 // 根据主输入框内容生成候选：
-// 1. 输入像路径且真实存在 → 「直接打开」项（文件自动取父目录）
-// 2. 按名称/路径关键字过滤收藏列表
+// 1. 输入像路径且真实存在 → 「在终端中打开」+「在资源管理器中打开」双候选
+//    （终端候选经 normalizeTarget，文件折算为父目录；资源管理器候选保留原路径，文件走 /select 选中）
+// 2. 按名称/路径关键字过滤收藏列表，每个条目同样出双候选
 function buildPushList(input: string): QtPushItem[] {
   const q = input.trim().replace(/^"(.*)"$/, '$1')
   if (!q) return []
@@ -100,9 +116,27 @@ function buildPushList(input: string): QtPushItem[] {
   if (looksLikePath(q)) {
     try {
       const resolved = window.services.normalizeTarget(q)
-      results.push({ icon: 'logo.png', title: '在终端中打开', text: resolved, _qtPath: resolved })
+      results.push({
+        icon: 'logo.png',
+        title: '在终端中打开',
+        text: resolved,
+        _qtPath: resolved,
+        _qtKind: 'terminal'
+      })
     } catch {
       // 不是有效路径，静默跳过，继续走收藏搜索
+    }
+    try {
+      const st = window.services.statPath(q)
+      results.push({
+        icon: 'logo.png',
+        title: '在资源管理器中打开',
+        text: st.path,
+        _qtPath: st.path,
+        _qtKind: 'explorer'
+      })
+    } catch {
+      // 同上
     }
   }
 
@@ -115,8 +149,18 @@ function buildPushList(input: string): QtPushItem[] {
         title: displayName(item.path),
         text: item.path,
         _qtPath: item.path,
-        _qtTerminal: item.terminal
+        _qtTerminal: item.terminal,
+        _qtKind: 'terminal'
       })
+      if (results.length < MAX_PUSH_RESULTS) {
+        results.push({
+          icon: 'logo.png',
+          title: displayName(item.path) + '（资源管理器）',
+          text: item.path,
+          _qtPath: item.path,
+          _qtKind: 'explorer'
+        })
+      }
     }
   }
   return results
@@ -128,7 +172,10 @@ onMounted(() => {
 
   window.ztools.onPluginEnter((action) => {
     if (action.code === 'open-folder') {
-      openFromPayload(action.payload)
+      openFromPayload(action.payload, 'terminal')
+    } else if (action.code === 'open-explorer' || action.code === 'open-explorer-file') {
+      // 粘贴/拖入文件夹或文件 → 秒开资源管理器（文件则选中）
+      openFromPayload(action.payload, 'explorer')
     } else if (action.code === 'search') {
       // 主输入框文本 → 选中「在终端中打开」入口（over 指令）
       // 文本先解析：路径形态直接校验；否则匹配收藏列表（输入 babe → D:\zsm\code\babe）
@@ -139,6 +186,17 @@ onMounted(() => {
         searchKeyword.value = ''
       } else if (text) {
         // 无法唯一解析（多个模糊匹配 / 无匹配）：进入面板按关键字过滤，让用户选择
+        searchKeyword.value = text
+        showPanel.value = true
+      }
+    } else if (action.code === 'search-explorer') {
+      // 主输入框文本 → 选中「在资源管理器中打开」入口（over 指令），解析规则与终端入口一致
+      const text = extractPath(action.payload)
+      const resolved = resolveOpenTarget(text)
+      if (resolved) {
+        openExplorerAndExit(resolved.path)
+        searchKeyword.value = ''
+      } else if (text) {
         searchKeyword.value = text
         showPanel.value = true
       }
@@ -153,7 +211,8 @@ onMounted(() => {
     (action) => {
       const option = action.option as QtPushItem
       if (option && option._qtPath) {
-        openAndExit(option._qtPath, option._qtTerminal)
+        if (option._qtKind === 'explorer') openExplorerAndExit(option._qtPath)
+        else openAndExit(option._qtPath, option._qtTerminal)
       }
     }
   )

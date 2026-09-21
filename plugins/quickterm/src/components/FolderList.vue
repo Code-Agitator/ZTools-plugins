@@ -43,6 +43,20 @@ function onOpen(item: FolderItem) {
   }
 }
 
+// 在系统资源管理器中打开该目录（文件目标已在入库时折算为目录，这里只会收到目录）
+function onOpenInExplorer(item: FolderItem) {
+  // preload 是插件进程启动时注入的，ZTools 未完全重启时可能还是旧版（无此方法）——显式提示而不是静默失败
+  if (typeof window.services.openInFileManager !== 'function') {
+    ElMessage.warning('服务为旧版本，请完全退出 ZTools（托盘退出）后重新启动再试')
+    return
+  }
+  try {
+    window.services.openInFileManager(item.path)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '打开失败')
+  }
+}
+
 // 为单个条目固定终端；选「跟随默认」(空值) 则清除固定
 function onItemTerminalChange(item: FolderItem, v: string) {
   item.terminal = (v || undefined) as TerminalType | undefined
@@ -182,6 +196,9 @@ function onRemove(item: FolderItem) {
         <el-tag v-if="item.terminal" size="small" type="info" class="qt-item-tag" effect="plain">
           {{ TERMINAL_LABELS[item.terminal] || item.terminal }}
         </el-tag>
+        <el-button class="qt-item-folder" link type="primary" size="small" @click.stop="onOpenInExplorer(item)">
+          打开文件夹
+        </el-button>
         <el-button class="qt-item-del" link type="danger" size="small" @click.stop="onRemove(item)">
           删除
         </el-button>
@@ -309,13 +326,15 @@ function onRemove(item: FolderItem) {
   flex-shrink: 0;
 }
 
-.qt-item-del {
+.qt-item-del,
+.qt-item-folder {
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.15s;
 }
 
-.qt-item:hover .qt-item-del {
+.qt-item:hover .qt-item-del,
+.qt-item:hover .qt-item-folder {
   opacity: 1;
 }
 </style>

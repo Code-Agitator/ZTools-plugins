@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import type { PromptItem } from '../types'
-import { renderVariables } from '../utils/index'
+import { renderVariables, shouldUseTextarea } from '../utils/index'
+import { renderMarkdown } from '../utils/markdown'
 
 const props = defineProps<{
   unit: PromptItem | null
@@ -23,31 +24,55 @@ const preview = computed(() => {
   return renderVariables(props.unit.content, props.values)
 })
 
+// 预览视图模式：text 纯文本 / markdown 渲染
+const previewMode = ref<'text' | 'markdown'>('text')
+const markdownHtml = computed(() => renderMarkdown(preview.value))
+
 function updateValue(name: string, value: string) {
   emit('update:values', { ...props.values, [name]: value })
+}
+
+function autoResize(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+}
+
+function onTextareaInput(name: string, e: Event) {
+  updateValue(name, (e.target as HTMLTextAreaElement).value)
+  nextTick(() => autoResize(e))
 }
 </script>
 
 <template>
   <div class="fill-wrap">
-    <div class="fill-body">
-      <!-- 左：变量表单 -->
-      <div class="fill-form">
+    <div class="fill-body" :class="{ 'single': variables.length === 0 }">
+      <!-- 左：变量表单（无变量时隐藏，将全部空间用于展示内容） -->
+      <div v-if="variables.length > 0" class="fill-form">
         <div class="form-header">
           <span class="form-title">填写变量</span>
-          <span v-if="variables.length > 0" class="form-count">
+          <span class="form-count">
             {{ variables.length - missingCount }}/{{ variables.length }}
           </span>
         </div>
         <div class="form-scroll">
-          <div v-if="variables.length > 0" class="var-form">
+          <div class="var-form">
             <div v-for="v in variables" :key="v.name" class="field">
               <label>
                 {{ v.name }}
                 <span v-if="v.required" class="req">*</span>
                 <span class="hint">{{ v.required ? '必填' : '可选' }}</span>
               </label>
+              <textarea
+                v-if="shouldUseTextarea(v)"
+                :value="values[v.name]"
+                rows="2"
+                :placeholder="v.defaultValue ? `默认: ${v.defaultValue}` : '请输入…'"
+                class="var-textarea"
+                @input="onTextareaInput(v.name, $event)"
+              ></textarea>
               <input
+                v-else
                 :value="values[v.name]"
                 type="text"
                 :placeholder="v.defaultValue ? `默认: ${v.defaultValue}` : '请输入…'"
@@ -55,7 +80,6 @@ function updateValue(name: string, value: string) {
               />
             </div>
           </div>
-          <div v-else class="no-vars">无需变量</div>
         </div>
       </div>
 
@@ -64,10 +88,15 @@ function updateValue(name: string, value: string) {
         <div class="preview-header">
           <span class="preview-title">{{ unit?.title || '提示词预览' }}</span>
           <span class="preview-meta">
-            <span v-if="unit?.tags?.length" class="tag" v-for="t in unit.tags.slice(0,3)" :key="t">#{{ t }}</span>
+            <span v-if="unit?.tags?.length" class="tag" v-for="t in (unit?.tags || []).slice(0,3)" :key="t">#{{ t }}</span>
           </span>
+          <div class="mode-toggle">
+            <button :class="['mode-btn', { active: previewMode === 'text' }]" @click="previewMode = 'text'">文本</button>
+            <button :class="['mode-btn', { active: previewMode === 'markdown' }]" @click="previewMode = 'markdown'">Markdown</button>
+          </div>
         </div>
-        <div class="preview-body">{{ preview }}</div>
+        <div v-if="previewMode === 'text'" class="preview-body">{{ preview }}</div>
+        <div v-else class="preview-body markdown-body" v-html="markdownHtml"></div>
       </div>
     </div>
     <!-- 底栏：固定在底部 -->
@@ -95,6 +124,10 @@ function updateValue(name: string, value: string) {
   display: grid;
   grid-template-columns: minmax(200px, 1fr) 2fr;
   overflow: hidden;
+}
+/* 无变量：隐藏表单，预览单列占满全部空间 */
+.fill-body.single {
+  grid-template-columns: 1fr;
 }
 
 /* 左侧表单 */
@@ -156,10 +189,23 @@ function updateValue(name: string, value: string) {
   box-shadow: 0 0 0 3px var(--pf-accent-soft);
 }
 .field input::placeholder { color: var(--pf-text-faint); }
-.no-vars {
-  display: flex; align-items: center; justify-content: center;
-  height: 120px; font-size: 14px; color: var(--pf-text-muted);
+.var-textarea {
+  min-height: 52px; max-height: 160px;
+  padding: 10px 14px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-border);
+  border-radius: var(--pf-radius-sm);
+  font-size: 14px; color: var(--pf-text);
+  font-family: var(--pf-font);
+  line-height: 1.5;
+  resize: none;
+  transition: all 0.15s ease;
 }
+.var-textarea:focus {
+  border-color: var(--pf-accent);
+  box-shadow: 0 0 0 3px var(--pf-accent-soft);
+}
+.var-textarea::placeholder { color: var(--pf-text-faint); }
 .form-actions {
   height: 52px; min-height: 52px;
   padding: 12px 20px;
@@ -202,5 +248,12 @@ function updateValue(name: string, value: string) {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--pf-font-mono);
+}
+
+/* Markdown 模式下覆盖 .preview-body 的等宽字体与 pre-wrap（全局 .markdown-body 样式见 main.css） */
+.preview-body.markdown-body {
+  font-family: inherit;
+  white-space: normal;
+  line-height: 1.7;
 }
 </style>

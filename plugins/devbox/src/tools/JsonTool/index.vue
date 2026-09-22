@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, computed, watch, onMounted, onUnmounted, shallowRef } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated, shallowRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Warning } from '@element-plus/icons-vue'
 import { EditorView, basicSetup } from 'codemirror'
@@ -364,6 +364,20 @@ function themeExtension() {
 
 let mediaCleanup: (() => void) | null = null
 
+/** 挂载系统主题切换监听（幂等，KeepAlive 挂载/激活时调用） */
+function attachThemeListener() {
+  if (mediaCleanup || !view.value) return
+  const mql = window.matchMedia('(prefers-color-scheme: dark)')
+  const onChange = () => {
+    view.value?.dispatch({ effects: themeCompartment.reconfigure(themeExtension()) })
+  }
+  mql.addEventListener('change', onChange)
+  mediaCleanup = () => {
+    mql.removeEventListener('change', onChange)
+    mediaCleanup = null
+  }
+}
+
 onMounted(() => {
   if (!editorHost.value) return
   const v = new EditorView({
@@ -390,12 +404,7 @@ onMounted(() => {
   })
   view.value = v
 
-  const mql = window.matchMedia('(prefers-color-scheme: dark)')
-  const onChange = () => {
-    v.dispatch({ effects: themeCompartment.reconfigure(themeExtension()) })
-  }
-  mql.addEventListener('change', onChange)
-  mediaCleanup = () => mql.removeEventListener('change', onChange)
+  attachThemeListener()
 })
 
 onUnmounted(() => {
@@ -403,6 +412,13 @@ onUnmounted(() => {
   view.value = null
   mediaCleanup?.()
   mediaCleanup = null
+})
+
+// 多标签 KeepAlive：切走时移除主题监听，切回时重挂
+onActivated(() => attachThemeListener())
+
+onDeactivated(() => {
+  mediaCleanup?.()
 })
 
 // 操作修改 textContent 时同步到编辑器（避免与 updateListener 形成循环）

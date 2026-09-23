@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { ref, nextTick, watch, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, watch, onMounted, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const htmlCode = ref('')
@@ -239,6 +239,18 @@ onMounted(() => updatePreview())
 
 onUnmounted(() => {
   if (timer) clearTimeout(timer)
+})
+
+// 多标签 KeepAlive：切走时丢弃待执行的防抖刷新，切回时强制同步一次预览
+onDeactivated(() => {
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+})
+
+onActivated(() => {
+  updatePreview()
 })
 </script>
 
